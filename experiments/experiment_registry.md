@@ -1,0 +1,8 @@
+# Experiment Registry
+
+| stage | variant | seed | mode | legacy val | legacy test | omega val | omega test | legacy gap | omega gap | critical slices | calibration | decision | notes |
+| --- | --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- | --- | --- |
+| stage0_baseline_truth | baseline_truth | 11 | replay | 4.611 | 6.157 | 4.645 | 6.312 | 2.018 | 2.150 | legacy[src=0.688,gender=1.399,height=1.269,quality=4.883]; omega[src=0.860,gender=1.142,height=1.492,quality=4.405] | cal=5.313, corr=0.030, p68=0.282, p95=0.480 | kill | matched no-physics replay; omega worse than legacy on validation and test |
+| stage1_aggregation_only | aggregation_only | 11 | replay | 4.611 | 6.157 | 4.645 | 6.312 | 2.018 | 2.150 | legacy[src=0.688,gender=1.399,height=1.269,quality=4.883]; omega[src=0.860,gender=1.142,height=1.492,quality=4.405] | cal=5.313, corr=0.030, p68=0.282, p95=0.480 | kill | aggregation-only replay failed promotion; keep omega diagnostic-only |
+| stage2_speaker_structured_no_physics | speaker_structured_no_physics | 11 | train | 5.334 | 6.951 | 5.349 | 7.004 | -0.594 | -0.561 | grouped-speaker batching reduced overfit gap but degraded frontier materially | cal=4.813, corr=-0.068, p68=0.410, p95=0.649 | kill | validation degraded by `+0.723 cm` and test degraded by `+0.794 cm` versus replay frontier |
+| stage3_speaker_alignment | speaker_alignment_no_physics | 11 | train | 7.794 | 9.629 | 7.823 | 9.670 | -0.631 | -0.603 | one-epoch exploratory smoke; not comparable as a promoted ladder result | cal=7.328, corr=-0.139, p68=0.340, p95=0.568 | kill | one-epoch exploratory run; clearly worse than frontier and not promotable |

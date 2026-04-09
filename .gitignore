@@ -1,0 +1,10 @@
+.pytest_cache/
+.ruff_cache/
+.uv-cache/
+.talkcody/
+.venv-evidence/
+Trash/
+outputs/
+data/
+*.pyc
+__pycache__/

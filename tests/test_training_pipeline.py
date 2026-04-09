@@ -1,0 +1,302 @@
+import os
+import sys
+
+import pytest
+import torch
+from torch.utils.data import DataLoader, Dataset
+
+sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
+
+from scripts.train import _coerce_int, _resolve_resume_checkpoint
+from src.models.vocalmorphv2 import VocalMorphV2
+from src.preprocessing.dataset import collate_fn
+from src.training.trainer import VocalMorphTrainer
+
+
+def _make_sequence(time_steps: int = 12, input_dim: int = 136) -> torch.Tensor:
+    seq = torch.randn(time_steps, input_dim, dtype=torch.float32)
+    formant_idxs = [125, 127, 129, 131]
+    for idx, value in zip(formant_idxs, [500.0, 1500.0, 2500.0, 3500.0]):
+        seq[:, idx] = value
+    seq[:, 133] = 140.0
+    seq[:, 134] = 700.0
+    seq[:, 135] = 16.5
+    return seq
+
+
+class _TinyDataset(Dataset):
+    def __init__(self, target_stats):
+        self.target_stats = target_stats
+        self.samples = []
+        raw_rows = [
+            ("spk_a", 168.0, 62.0, 24.0, 0),
+            ("spk_a", 168.0, 62.0, 24.0, 0),
+            ("spk_b", 176.0, 74.0, 39.0, 1),
+            ("spk_b", 176.0, 74.0, 39.0, 1),
+        ]
+        for idx, (speaker_id, height_raw, weight_raw, age_raw, gender) in enumerate(raw_rows):
+            self.samples.append(
+                {
+                    "sequence": _make_sequence(),
+                    "height": torch.tensor(
+                        (height_raw - target_stats["height"]["mean"]) / target_stats["height"]["std"],
+                        dtype=torch.float32,
+                    ),
+                    "weight": torch.tensor(
+                        (weight_raw - target_stats["weight"]["mean"]) / target_stats["weight"]["std"],
+                        dtype=torch.float32,
+                    ),
+                    "age": torch.tensor(
+                        (age_raw - target_stats["age"]["mean"]) / target_stats["age"]["std"],
+                        dtype=torch.float32,
+                    ),
+                    "gender": torch.tensor(gender, dtype=torch.long),
+                    "height_raw": torch.tensor(height_raw, dtype=torch.float32),
+                    "weight_raw": torch.tensor(weight_raw, dtype=torch.float32),
+                    "age_raw": torch.tensor(age_raw, dtype=torch.float32),
+                    "f0_mean": torch.tensor(140.0, dtype=torch.float32),
+                    "formant_spacing_mean": torch.tensor(700.0, dtype=torch.float32),
+                    "vtl_mean": torch.tensor(16.5, dtype=torch.float32),
+                    "weight_mask": torch.tensor(1.0, dtype=torch.float32),
+                    "source_id": torch.tensor(1, dtype=torch.long),
+                    "speaker_id": speaker_id,
+                }
+            )
+
+    def __len__(self):
+        return len(self.samples)
+
+    def __getitem__(self, idx):
+        return self.samples[idx]
+
+
+def test_coerce_int_supports_simple_arithmetic():
+    assert _coerce_int(4, "x") == 4
+    assert _coerce_int("16*2", "x") == 32
+    assert _coerce_int("(8 + 4) // 2", "x") == 6
+    with pytest.raises(ValueError):
+        _coerce_int("3/2", "x")
+
+
+def test_v2_trainer_uses_native_loss_and_reports_speaker_metrics(tmp_path):
+    torch.manual_seed(5)
+    target_stats = {
+        "height": {"mean": 172.0, "std": 8.0},
+        "weight": {"mean": 68.0, "std": 10.0},
+        "age": {"mean": 31.0, "std": 7.0},
+    }
+    dataset = _TinyDataset(target_stats)
+    loader = DataLoader(dataset, batch_size=2, shuffle=False, collate_fn=collate_fn)
+
+    model = VocalMorphV2(
+        input_dim=136,
+        ecapa_channels=64,
+        ecapa_scale=4,
+        conformer_d_model=32,
+        conformer_heads=4,
+        conformer_blocks=1,
+        dropout=0.1,
+        target_stats=target_stats,
+    )
+
+    config = {
+        "training": {
+            "epochs": 1,
+            "batch_size": 2,
+            "gradient_accumulation_steps": 2,
+            "num_workers": 0,
+            "device": "cpu",
+            "mixed_precision": False,
+            "ema": {"enabled": True, "decay": 0.99, "use_for_eval": True},
+            "loss": {"type": "vtsl_v2", "use_gender_class_weights": False},
+            "optimizer": {"lr": 1e-3, "weight_decay": 0.0, "betas": [0.9, 0.999]},
+            "scheduler": {"T_0": 2, "T_mult": 1, "eta_min": 1e-5},
+            "early_stopping": {"enabled": False, "monitor": "height_mae_speaker", "mode": "min"},
+            "gradient_clipping": {"enabled": True, "max_norm": 1.0},
+        },
+        "evaluation": {"inference": {"use_ensemble": True, "deterministic": True, "n_crops": 2, "crop_size": 8}},
+        "logging": {
+            "tensorboard": {"log_dir": str(tmp_path / "logs")},
+            "checkpoint": {"dir": str(tmp_path / "ckpts"), "save_top_k": 1, "monitor": "height_mae_speaker", "mode": "min"},
+        },
+        "physics": {"vtl_height_constraint": {"ratio": 6.7}},
+    }
+
+    trainer = VocalMorphTrainer(
+        model=model,
+        train_loader=loader,
+        val_loader=loader,
+        config=config,
+        target_stats=target_stats,
+    )
+
+    assert trainer.use_native_v2_loss is True
+    assert trainer.use_ema is True
+    train_losses = trainer._train_epoch(epoch=1)
+    assert torch.isfinite(torch.tensor(train_losses["total"]))
+    assert trainer.ema_state
+
+    val_metrics = trainer._val_epoch_on(loader)
+    assert "height_mae" in val_metrics
+    assert "height_mae_speaker" in val_metrics
+    assert "height_mae_speaker_omega" in val_metrics
+    assert "height_calibration_mae" in val_metrics
+    assert "height_interval_68" in val_metrics
+    assert torch.isfinite(torch.tensor(val_metrics["total"]))
+    assert torch.isfinite(torch.tensor(val_metrics["height_mae_speaker"]))
+    assert torch.isfinite(torch.tensor(val_metrics["height_mae_speaker_omega"]))
+    assert torch.isfinite(torch.tensor(val_metrics["height_calibration_mae"]))
+    trainer.close()
+
+
+def test_trainer_writes_recovery_checkpoints_and_can_resume(tmp_path):
+    torch.manual_seed(7)
+    target_stats = {
+        "height": {"mean": 172.0, "std": 8.0},
+        "weight": {"mean": 68.0, "std": 10.0},
+        "age": {"mean": 31.0, "std": 7.0},
+    }
+    dataset = _TinyDataset(target_stats)
+    loader = DataLoader(dataset, batch_size=2, shuffle=False, collate_fn=collate_fn)
+
+    def _build_model():
+        return VocalMorphV2(
+            input_dim=136,
+            ecapa_channels=64,
+            ecapa_scale=4,
+            conformer_d_model=32,
+            conformer_heads=4,
+            conformer_blocks=1,
+            dropout=0.1,
+            target_stats=target_stats,
+        )
+
+    config = {
+        "training": {
+            "epochs": 1,
+            "batch_size": 2,
+            "gradient_accumulation_steps": 1,
+            "num_workers": 0,
+            "device": "cpu",
+            "mixed_precision": False,
+            "allow_tf32": False,
+            "ema": {"enabled": True, "decay": 0.99, "use_for_eval": True},
+            "loss": {"type": "vtsl_v2", "use_gender_class_weights": False},
+            "optimizer": {"lr": 1e-3, "weight_decay": 0.0, "betas": [0.9, 0.999]},
+            "scheduler": {"T_0": 2, "T_mult": 1, "eta_min": 1e-5},
+            "early_stopping": {"enabled": False, "monitor": "height_mae_speaker", "mode": "min"},
+            "gradient_clipping": {"enabled": True, "max_norm": 1.0},
+            "seed": 7,
+        },
+        "evaluation": {"inference": {"use_ensemble": True, "deterministic": True, "n_crops": 2, "crop_size": 8}},
+        "logging": {
+            "tensorboard": {"log_dir": str(tmp_path / "logs")},
+            "checkpoint": {"dir": str(tmp_path / "ckpts"), "save_top_k": 2, "monitor": "height_mae_speaker", "mode": "min"},
+        },
+        "physics": {"vtl_height_constraint": {"ratio": 6.7}},
+    }
+
+    trainer = VocalMorphTrainer(
+        model=_build_model(),
+        train_loader=loader,
+        val_loader=loader,
+        config=config,
+        target_stats=target_stats,
+        train_eval_loader=loader,
+    )
+    trainer.train()
+    trainer.close()
+
+    ckpt_dir = tmp_path / "ckpts"
+    assert (ckpt_dir / "last.ckpt").exists()
+    assert (ckpt_dir / "last_good.ckpt").exists()
+    assert (ckpt_dir / "best.ckpt").exists()
+    assert (tmp_path / "metrics.jsonl").exists()
+
+    payload = torch.load(ckpt_dir / "last.ckpt", map_location="cpu", weights_only=False)
+    assert payload["epoch"] == 1
+    assert "optimizer_state_dict" in payload
+    assert "scheduler_state_dict" in payload
+    assert "scaler_state_dict" in payload
+    assert "rng_state" in payload
+    assert "config" in payload
+    assert payload["global_step"] >= 1
+
+    resolved = _resolve_resume_checkpoint(config)
+    assert resolved == str(ckpt_dir / "last.ckpt")
+
+    resumed = VocalMorphTrainer(
+        model=_build_model(),
+        train_loader=loader,
+        val_loader=loader,
+        config=config,
+        target_stats=target_stats,
+        train_eval_loader=loader,
+    )
+    resumed.restore_from_checkpoint(payload)
+    assert resumed.start_epoch == 2
+    assert resumed.last_completed_epoch == 1
+    assert resumed.optimizer_step_count == payload["optimizer_step_count"]
+    resumed.close()
+
+
+def test_trainer_accepts_old_checkpoint_without_reliability_tower(tmp_path):
+    torch.manual_seed(9)
+    target_stats = {
+        "height": {"mean": 172.0, "std": 8.0},
+        "weight": {"mean": 68.0, "std": 10.0},
+        "age": {"mean": 31.0, "std": 7.0},
+    }
+    dataset = _TinyDataset(target_stats)
+    loader = DataLoader(dataset, batch_size=2, shuffle=False, collate_fn=collate_fn)
+
+    model = VocalMorphV2(
+        input_dim=136,
+        ecapa_channels=64,
+        ecapa_scale=4,
+        conformer_d_model=32,
+        conformer_heads=4,
+        conformer_blocks=1,
+        dropout=0.1,
+        target_stats=target_stats,
+    )
+
+    config = {
+        "training": {
+            "epochs": 1,
+            "batch_size": 2,
+            "gradient_accumulation_steps": 1,
+            "num_workers": 0,
+            "device": "cpu",
+            "mixed_precision": False,
+            "allow_tf32": False,
+            "ema": {"enabled": False, "decay": 0.99, "use_for_eval": False},
+            "loss": {"type": "vtsl_v2", "use_gender_class_weights": False},
+            "optimizer": {"lr": 1e-3, "weight_decay": 0.0, "betas": [0.9, 0.999]},
+            "scheduler": {"T_0": 2, "T_mult": 1, "eta_min": 1e-5},
+            "early_stopping": {"enabled": False, "monitor": "height_mae_speaker", "mode": "min"},
+            "gradient_clipping": {"enabled": True, "max_norm": 1.0},
+            "seed": 9,
+        },
+        "evaluation": {"inference": {"use_ensemble": False, "deterministic": True, "n_crops": 1}},
+        "logging": {
+            "tensorboard": {"log_dir": str(tmp_path / "logs")},
+            "checkpoint": {"dir": str(tmp_path / "ckpts"), "save_top_k": 1, "monitor": "height_mae_speaker", "mode": "min"},
+        },
+        "physics": {"vtl_height_constraint": {"ratio": 6.7}},
+    }
+
+    trainer = VocalMorphTrainer(
+        model=model,
+        train_loader=loader,
+        val_loader=loader,
+        config=config,
+        target_stats=target_stats,
+    )
+    stripped_state = {
+        key: value
+        for key, value in model.state_dict().items()
+        if not key.startswith("reliability_tower.")
+    }
+    trainer._load_model_checkpoint_state(stripped_state)
+    trainer.close()
