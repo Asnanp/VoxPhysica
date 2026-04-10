@@ -169,12 +169,14 @@ class VocalTractSimulatorLossV2(nn.Module):
         targets: Mapping[str, torch.Tensor],
         device: torch.device,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        loss, mae = self._probabilistic_regression_loss(
-            preds, targets, "height", device
-        )
+        loss, mae = self._probabilistic_regression_loss(preds, targets, "height", device)
         target = targets.get("height")
         if target is None:
             return loss, mae
+
+        current_epoch = int(
+            targets.get("epoch", preds.get("current_epoch", self.current_epoch))
+        )
 
         target = target.to(device)
         valid = torch.isfinite(target)
@@ -202,13 +204,33 @@ class VocalTractSimulatorLossV2(nn.Module):
                 1.0 - self.focal_ema_decay
             ) * max(batch_mae, 1e-3)
 
-        current_epoch = int(
-            targets.get("epoch", preds.get("current_epoch", self.current_epoch))
-        )
         if current_epoch >= self.focal_after_epoch:
             denom = max(self.running_height_mae, 1e-3)
             weights = (residual.detach() / denom).clamp(1.0, 3.0)
             per_sample = per_sample * weights
+
+        height_raw = targets.get("height_raw")
+        if height_raw is not None and current_epoch >= int(
+            self.speaker_alignment.height_bin_loss_start_epoch
+        ):
+            short_w = float(self.speaker_alignment.height_bin_loss_weight_short)
+            medium_w = float(self.speaker_alignment.height_bin_loss_weight_medium)
+            tall_w = float(self.speaker_alignment.height_bin_loss_weight_tall)
+            if max(abs(short_w - 1.0), abs(medium_w - 1.0), abs(tall_w - 1.0)) > 1e-6:
+                height_raw = height_raw.to(device=device, dtype=torch.float32)[valid]
+                sample_weights = torch.full_like(per_sample, medium_w)
+                sample_weights = torch.where(
+                    height_raw < 160.0,
+                    torch.full_like(sample_weights, short_w),
+                    sample_weights,
+                )
+                sample_weights = torch.where(
+                    height_raw >= 175.0,
+                    torch.full_like(sample_weights, tall_w),
+                    sample_weights,
+                )
+                sample_weights = sample_weights / sample_weights.mean().clamp(min=1e-6)
+                per_sample = per_sample * sample_weights
 
         return per_sample.mean(), residual.mean()
 
@@ -529,6 +551,31 @@ class VocalTractSimulatorLossV2(nn.Module):
             min=float(self.reliability_config.min_weight), max=1.0
         )
 
+    def _speaker_pool_mean(
+        self,
+        pred_height_cm: torch.Tensor,
+        pred_height_var_cm: torch.Tensor,
+        clip_reliability: torch.Tensor,
+    ) -> torch.Tensor:
+        method = str(self.speaker_alignment.pooling_method or "omega").strip().lower()
+        valid = torch.isfinite(pred_height_cm)
+        if pred_height_var_cm is not None:
+            valid = valid & torch.isfinite(pred_height_var_cm)
+        if clip_reliability is not None:
+            valid = valid & torch.isfinite(clip_reliability)
+        pred_height_cm = pred_height_cm[valid]
+        if pred_height_cm.numel() == 0:
+            return torch.zeros((), device=clip_reliability.device if clip_reliability is not None else pred_height_cm.device)
+        if method in {"mean", "simple_mean", "speaker_mean"}:
+            return pred_height_cm.mean()
+        pooled = omega_reliability_pool(
+            pred_height_cm,
+            clip_reliability=clip_reliability[valid],
+            pred_var=pred_height_var_cm[valid],
+            config=self.aggregation_config,
+        )
+        return pooled["mean"].view(())
+
     def _speaker_pooled_height_loss(
         self,
         preds: Mapping[str, torch.Tensor],
@@ -561,22 +608,28 @@ class VocalTractSimulatorLossV2(nn.Module):
             mask = speaker_idx == speaker
             if int(mask.sum().item()) < 2:
                 continue
-            pooled = omega_reliability_pool(
-                pred_height_cm[mask],
-                clip_reliability=clip_reliability[mask],
-                pred_var=pred_height_var_cm[mask],
-                config=self.aggregation_config,
-            )
             speaker_targets = height_raw[mask]
             speaker_targets = speaker_targets[torch.isfinite(speaker_targets)]
             if speaker_targets.numel() == 0:
                 continue
-            losses.append(
-                F.smooth_l1_loss(
-                    pooled["mean"].view(()),
-                    speaker_targets.mean().view(()),
-                )
+            pooled_mean = self._speaker_pool_mean(
+                pred_height_cm[mask],
+                pred_height_var_cm[mask],
+                clip_reliability[mask],
             )
+            if str(self.speaker_alignment.pooling_method or "omega").strip().lower() in {
+                "mean",
+                "simple_mean",
+                "speaker_mean",
+            }:
+                losses.append((pooled_mean - speaker_targets.mean().view(())).abs())
+            else:
+                losses.append(
+                    F.smooth_l1_loss(
+                        pooled_mean.view(()),
+                        speaker_targets.mean().view(()),
+                    )
+                )
         if not losses:
             return torch.zeros((), device=device)
         return torch.stack(losses).mean()
@@ -604,6 +657,21 @@ class VocalTractSimulatorLossV2(nn.Module):
         )
         pred_height_std_cm = pred_height_std_cm * height_std_scale
         clip_reliability = self._clip_reliability(preds, device)
+
+        if str(self.speaker_alignment.consistency_mode or "pairwise_weighted").strip().lower() == "variance":
+            losses = []
+            for speaker in torch.unique(speaker_idx[speaker_idx >= 0]):
+                idxs = torch.nonzero(speaker_idx == speaker, as_tuple=False).flatten()
+                if idxs.numel() < 2:
+                    continue
+                speaker_preds = pred_height_cm[idxs]
+                speaker_preds = speaker_preds[torch.isfinite(speaker_preds)]
+                if speaker_preds.numel() < 2:
+                    continue
+                losses.append(torch.var(speaker_preds, unbiased=False))
+            if not losses:
+                return torch.zeros((), device=device)
+            return torch.stack(losses).mean()
 
         pair_losses = []
         max_combined = float(self.speaker_alignment.consistency_max_combined_std_cm)
@@ -657,17 +725,17 @@ class VocalTractSimulatorLossV2(nn.Module):
         unique_speakers = torch.unique(speaker_idx[speaker_idx >= 0])
         for speaker in unique_speakers:
             mask = speaker_idx == speaker
-            pooled = omega_reliability_pool(
-                pred_height_cm[mask],
-                clip_reliability=clip_reliability[mask],
-                pred_var=pred_height_var_cm[mask],
-                config=self.aggregation_config,
-            )
             truths = height_raw[mask]
             truths = truths[torch.isfinite(truths)]
             if truths.numel() == 0:
                 continue
-            pooled_preds.append(pooled["mean"])
+            pooled_preds.append(
+                self._speaker_pool_mean(
+                    pred_height_cm[mask],
+                    pred_height_var_cm[mask],
+                    clip_reliability[mask],
+                )
+            )
             pooled_truth.append(truths.mean())
 
         if len(pooled_preds) < 2:

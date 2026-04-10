@@ -31,6 +31,24 @@
   - hybrid speaker sampler with paired and singleton speakers in the same batch
   - explicit `training.speaker_batching.mode`
   - omega runner epoch override for controlled smoke tests
+- Implemented `stage3d_height_only_slice_aligned` as a controlled follow-on to Stage 3c:
+  - height-balanced speaker sampler that preserves Stage 3c clip/update budget
+  - per-height-bin loss weighting
+  - mean-pooled speaker regression loss
+  - same-speaker prediction variance regularization
+  - speaker-level ranking refinement
+  - training-only feature smoothing and one-epoch LR warmup
+- Prepared `stage3e_height_only_stable_bin_weighted` as the next strict no-physics line:
+  - keeps the Stage 3c backbone and plain shuffled batches
+  - keeps legacy aggregation as the primary monitor
+  - uses gentle per-height-bin loss weighting instead of speaker-batching tricks
+  - uses training-only feature smoothing
+  - switches the trainer to a monotonic cosine decay path so Omega stages can avoid epoch-8 warm restarts when configured
+- Prepared and launched `stage3f_height_only_long_stable`:
+  - keeps the Stage 3c objective and plain shuffled batches intact
+  - extends the run to `50` epochs
+  - uses monotonic cosine decay with `T_max=50`
+  - runs in a separate user-visible PowerShell terminal so it is not bound to Codex command timeouts
 
 ## Evidence Update
 - `stage0_baseline_truth`: `kill`
@@ -46,23 +64,97 @@
   - validation speaker MAE: legacy `7.794 cm`, omega `7.823 cm`
   - test speaker MAE: legacy `9.629 cm`, omega `9.670 cm`
   - this was exploratory only and is not promotable evidence
+- `stage2b_hybrid_speaker_structured`: `kill`
+  - epoch 1 validation speaker MAE: legacy `7.815 cm`, omega `7.833 cm`
+  - eval-only test speaker MAE from saved best checkpoint: legacy `9.591 cm`, omega `9.537 cm`
+  - hybrid batching missed the frontier by `+3.204 cm` val and `+3.434 cm` test
+  - short-height and female slices remained catastrophic
+- `stage3b_height_focused_control`: `kill`
+  - best validation speaker MAE by epoch 4: legacy `5.842 cm`, omega `6.285 cm`
+  - strict eval-only test speaker MAE from saved best checkpoint: legacy `6.365 cm`, omega `6.791 cm`
+  - epoch trace was unstable: `6.40 -> 7.55 -> 8.99 -> 5.84`
+  - epoch-4 train/val speaker gap reached `2.79 cm`
+- `stage3c_height_only_regularized`: `hold`
+  - completed all `10` epochs
+  - best validation speaker MAE: legacy `4.361 cm`, omega `4.303 cm`
+  - strict eval-only test speaker MAE from saved best checkpoint: legacy `5.889 cm`, omega `5.970 cm`
+  - this is the first strict single-seed line to beat the old `4.611 / 6.157` frontier on both validation and test under legacy aggregation
+  - legacy train/val speaker gap is still `+2.325 cm`
+  - validation `height_quality_medium_speaker_mae` is still catastrophic at `13.497 cm`
+  - decision is `hold`, not `promote`
+- `stage3c_height_only_regularized` replication:
+  - seed `17`: legacy `4.918 / 6.060`, omega `5.033 / 5.992`, train/val speaker gap `+2.316 cm`
+  - seed `23`: legacy `4.736 / 5.974`, omega `4.845 / 5.977`, train/val speaker gap `+2.359 cm`
+  - three-seed legacy mean: validation `4.671 cm`, test `5.974 cm`
+  - three-seed legacy spread: validation stdev `0.284 cm`, test stdev `0.086 cm`
+  - all three seeds beat the old strict test frontier, but the mean validation result is still slightly worse than the old frontier and the line remains unstable
+  - replicated verdict stays `hold`, not `promote`
+- `stage3d_height_only_slice_aligned` seed `11`: `hold`
+  - exact launch command:
+    - `C:\Users\USER\anaconda3\python.exe scripts\run_omega_ladder.py --only stage3d_height_only_slice_aligned --seeds 11 --epochs 10 --run --python C:\Users\USER\anaconda3\python.exe`
+  - resolved config:
+    - audited features `data/features_audited/`
+    - legacy monitor `height_mae_speaker`
+    - no-physics Stage 3c backbone preserved
+    - Stage 3d additions active: `height_balanced` speaker batching, mean-pooled speaker loss, variance consistency, speaker ranking, feature smoothing `0.012`, warmup `1`
+  - best validation speaker MAE: legacy `4.324 cm`, omega `4.372 cm`
+  - strict test speaker MAE from `best.ckpt`: legacy `6.223 cm`, omega `6.326 cm`
+  - best-checkpoint train_eval speaker MAE: legacy `3.519 cm`, omega `3.564 cm`
+  - best-checkpoint train-to-val speaker gap: legacy `+0.806 cm`, omega `+0.808 cm`
+  - validation short-height speaker MAE: `5.447 cm`
+  - strict test short-height speaker MAE: `11.987 cm`
+  - validation quality-medium speaker MAE: `11.925 cm`
+  - stability trace stayed mixed:
+    - epoch speaker MAE `4.88 -> 4.52 -> 5.71 -> 6.38 -> 4.52 -> 4.32 -> 4.37 -> 4.52 -> 10.29 -> 8.19`
+    - best checkpoint came from epoch `6`
+    - late epochs collapsed sharply, so stability is still not clean
+  - decision rationale:
+    - positive: validation beat the old `4.611 cm` frontier and the generalization gap improved dramatically versus Stage 3c
+    - negative: strict test still missed the old `6.157 cm` frontier, short-height strict test error stayed severe, and convergence was unstable late
+    - net: mixed first evidence, not promotable yet
+- `stage3f_height_only_long_stable` seed `11`: `hold`
+  - completed as a long-run follow-up under the same strict audited path
+  - best validation speaker MAE: legacy `4.527 cm`, omega `4.589 cm`
+  - strict test speaker MAE from `best.ckpt`: legacy `5.802 cm`, omega `5.957 cm`
+  - best checkpoint came early at epoch `5`; later validation at epoch `15` was `4.720 cm`
+  - final train_eval speaker MAE was `2.412 cm`, so the final train-to-val speaker gap widened back to `+2.309 cm`
+  - validation short-height speaker MAE improved materially at the best epoch (`3.513 cm`) and ended at `5.937 cm`
+  - validation quality-medium speaker MAE remained unstable: `7.658 cm` at epoch `2`, `11.401 cm` at the best epoch, `9.693 cm` at epoch `15`
+  - early stopping fired after `10` non-improving epochs, so the line found an early best point but did not consolidate it
+  - this is a real but limited positive single-seed result, not a breakthrough
+  - classification stays `hold`, promising but not promotable
 
 ## Still Risky
-- No Omega training stage has improved the frontier yet.
-- Only one matched seed has been replayed and one seed has been trained for Stage 2, so broader seed stability is still unknown.
+- No Omega training stage has been promoted to the frontier yet.
+- Stage 3c is now replicated on three seeds, and the result is mixed rather than cleanly stable.
+- Stage 3d seed `11` improved validation and the train/val speaker gap, but it did not clear the old strict test frontier and still showed a late collapse.
+- The long-run height-only follow-up (`stage3f_height_only_long_stable`) beat the old frontier on this single seed, but it peaked early, the gap reopened, and validation quality-medium speakers remained unstable.
 - Learned reliability mode is still scaffolding until a strict training stage proves it helps.
 - Physics remains unearned against the no-physics line.
-- Stage 2b hybrid batching is live but not yet judged; it must beat the replay frontier before it earns more seeds.
+- Both speaker-batching redesigns have now failed, which raises confidence that batching structure is not the main frontier bottleneck.
+- Stage 3c still has a large train-vs-val speaker gap, severe short-height weakness, and unstable validation quality slices, so the representation is still not robust enough for promotion.
 
 ## Next Experiments
-- Do not promote Stage 2 or Stage 3 as currently designed.
-- Redesign Stage 2 before spending more seeds:
-  - revisit grouped-speaker batching shape and sampler pressure
-  - reduce aggression before reintroducing speaker-level losses
-- Active run:
-  - `stage2b_hybrid_speaker_structured`
-  - single-seed smoke on `seed 11`
-  - `10` epochs on CUDA
-  - hybrid batch shape = `4` paired speakers with `2` clips each + `8` singleton speakers
+- Do not spend more seeds on batching tricks.
+- Replication task for `stage3c_height_only_regularized` is complete.
+- No new promotion has been earned yet.
 - Keep legacy `height_mae_speaker` as the primary monitor.
 - Keep omega pooling diagnostic-only until a redesigned pooling method proves a real gain.
+- Stage 3d seed `11` is complete and remains `hold`.
+- Do not promote Stage 3d from one seed.
+- Any further Stage 3d replication should wait for an explicit decision, because first evidence is mixed rather than clearly frontier-beating.
+- Next prepared line: `stage3e_height_only_stable_bin_weighted`
+  - hypothesis: Stage 3c had the cleaner strict-test behavior, while Stage 3d improved hard-slice pressure and gap but became unstable under the restart-heavy schedule and speaker-batched regime; Stage 3e keeps the simpler Stage 3c training path, adds only gentle hard-slice weighting plus smoothing, and removes restart pressure from the configured scheduler
+  - first-run target: seed `11` only
+  - early kill rule: kill if validation `height_mae_speaker` is still above `4.8 cm` by epoch 5, if the train-to-val speaker gap is still above `2.0 cm` by epoch 5, or if short-height speaker MAE shows no material improvement versus the old strict frontier path
+- Completed long-run follow-up: `stage3f_height_only_long_stable`
+  - exact launch command:
+    - `C:\Users\USER\anaconda3\python.exe scripts\run_omega_ladder.py --only stage3f_height_only_long_stable --seeds 11 --epochs 50 --run --python C:\Users\USER\anaconda3\python.exe`
+  - artifacts:
+    - `outputs/omega/stage3f_height_only_long_stable/height_only_long_stable_no_physics/seed_11/train.stdout.log`
+    - `outputs/omega/stage3f_height_only_long_stable/height_only_long_stable_no_physics/seed_11/train.stderr.log`
+    - `outputs/omega/stage3f_height_only_long_stable/height_only_long_stable_no_physics/seed_11/metrics.json`
+  - outcome:
+    - best legacy speaker MAE `4.527 cm` at epoch `5`
+    - strict legacy test `5.802 cm`
+    - no promotion earned from this single seed

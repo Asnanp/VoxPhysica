@@ -3,6 +3,7 @@ from pathlib import Path
 import numpy as np
 
 from scripts.audit_speaker_leakage import speaker_leakage_report
+from scripts.run_omega_ladder import OMEGA_STAGES
 from scripts.run_v2_ablations import build_ablation_config, summarize_metrics
 
 
@@ -61,3 +62,25 @@ def test_summarize_metrics_reports_mean_and_std():
     assert baseline["n_runs"] == 2.0
     assert baseline["final_val_height_mae_speaker_mean"] == 2.6
     assert baseline["final_test_height_mae_speaker_mean"] == 2.65
+
+
+def test_omega_stage3e_is_registered_with_stable_scheduler():
+    stage = OMEGA_STAGES["stage3e_height_only_stable_bin_weighted"]
+    overrides = stage["overrides"]
+    assert stage["monitor"] == "height_mae_speaker"
+    assert overrides["training.speaker_batching.enabled"] is False
+    assert overrides["training.scheduler.type"] == "cosine_annealing"
+    assert overrides["training.scheduler.T_max"] == 10
+    assert overrides["training.speaker_alignment.enable_pooled_height"] is False
+    assert overrides["training.speaker_alignment.height_bin_loss_weight_short"] == 1.25
+
+
+def test_omega_stage3f_is_registered_as_stage3c_style_long_run():
+    stage = OMEGA_STAGES["stage3f_height_only_long_stable"]
+    overrides = stage["overrides"]
+    assert stage["monitor"] == "height_mae_speaker"
+    assert overrides["training.speaker_batching.enabled"] is False
+    assert overrides["training.scheduler.type"] == "cosine_annealing"
+    assert overrides["training.scheduler.T_max"] == 50
+    assert overrides["training.loss.task_weights.height"] == 4.0
+    assert overrides["training.speaker_alignment.enable_pooled_height"] is False

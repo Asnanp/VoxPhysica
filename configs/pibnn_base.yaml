@@ -202,15 +202,33 @@ training:
     clips_per_speaker: 2
     paired_speakers_per_batch: 4
     singleton_speakers_per_batch: 8
+    balance_gender: true
+    gender_balance_strength: 0.20
+    height_bin_weights:
+      short: 1.8
+      medium: 1.0
+      tall: 1.15
   speaker_alignment:
     enable_pooled_height: false
     enable_consistency: false
     enable_ranking: false
+    pooling_method: omega
+    consistency_mode: pairwise_weighted
     warmup_start_epoch: 3
     warmup_end_epoch: 8
     pooled_height_weight_max: 0.35
     consistency_weight_max: 0.15
     ranking_weight_max: 0.10
+    ranking_min_height_delta_cm: 2.0
+    ranking_margin_cm: 0.5
+    consistency_max_combined_std_cm: 5.0
+    height_bin_loss_start_epoch: 1
+    height_bin_loss_weight_short: 1.0
+    height_bin_loss_weight_medium: 1.0
+    height_bin_loss_weight_tall: 1.0
+  feature_smoothing_std: 0.0
+  lr_warmup_epochs: 0
+  lr_warmup_start_factor: 0.25
   early_stopping:
     enabled: true
     patience: 10

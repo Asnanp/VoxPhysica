@@ -97,6 +97,8 @@ class SpeakerAlignmentConfig:
     enable_pooled_height: bool = False
     enable_consistency: bool = False
     enable_ranking: bool = False
+    pooling_method: str = "omega"
+    consistency_mode: str = "pairwise_weighted"
     warmup_start_epoch: int = 3
     warmup_end_epoch: int = 8
     pooled_height_weight_max: float = 0.0
@@ -105,6 +107,10 @@ class SpeakerAlignmentConfig:
     ranking_min_height_delta_cm: float = 2.0
     ranking_margin_cm: float = 0.5
     consistency_max_combined_std_cm: float = 5.0
+    height_bin_loss_start_epoch: int = 1
+    height_bin_loss_weight_short: float = 1.0
+    height_bin_loss_weight_medium: float = 1.0
+    height_bin_loss_weight_tall: float = 1.0
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)

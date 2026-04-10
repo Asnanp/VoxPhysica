@@ -15,14 +15,17 @@ import glob
 import json
 import os
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
 from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import DataLoader, Dataset
 
+from src.utils.audit_utils import height_bin
+
 from .samplers import (
+    BalancedHeightAwareSpeakerBatchSampler,
     GroupedSpeakerBatchSampler,
     HybridSpeakerBatchSampler,
     build_worker_init_fn,
@@ -142,6 +145,7 @@ class VocalMorphDataset(Dataset):
         if len(self.file_paths) == 0:
             raise ValueError(f"No .npz files found in: {features_dir}")
         self._speaker_to_indices: Optional[Dict[str, List[int]]] = None
+        self._speaker_metadata: Optional[Dict[str, Dict[str, Any]]] = None
 
         aug_label = " [augment=ON]" if augment else ""
         print(
@@ -359,6 +363,33 @@ class VocalMorphDataset(Dataset):
             self._speaker_to_indices = mapping
         return self._speaker_to_indices
 
+    def speaker_metadata(self) -> Dict[str, Dict[str, Any]]:
+        if self._speaker_metadata is None:
+            metadata: Dict[str, Dict[str, Any]] = {}
+            for speaker_id, indices in self.speaker_to_indices().items():
+                if not indices:
+                    continue
+                path = self.file_paths[int(indices[0])]
+                data = np.load(path, allow_pickle=True)
+                height_raw = float(data["height_cm"]) if "height_cm" in data else float("nan")
+                gender_value: Any = data["gender"] if "gender" in data else None
+                if isinstance(gender_value, np.ndarray) and gender_value.shape == ():
+                    gender_value = gender_value.item()
+                if isinstance(gender_value, str):
+                    gender_value = 1 if gender_value.lower() == "male" else 0
+                elif gender_value is not None:
+                    try:
+                        gender_value = int(gender_value)
+                    except Exception:
+                        gender_value = None
+                metadata[str(speaker_id)] = {
+                    "height_cm": height_raw,
+                    "height_bin": height_bin(height_raw) if np.isfinite(height_raw) else "medium",
+                    "gender": gender_value if gender_value in (0, 1) else None,
+                }
+            self._speaker_metadata = metadata
+        return self._speaker_metadata
+
 
 def collate_fn(batch: List[Dict]) -> Dict[str, torch.Tensor]:
     """Pad variable-length sequences. Returns padding mask (True = padded)."""
@@ -445,7 +476,7 @@ def build_dataloaders_from_dirs(
     prefetch_factor: Optional[int] = None,
     train_augment: bool = False,
     augment_config: Optional[FeatureAugmentConfig] = None,
-    speaker_batching: Optional[Dict[str, int]] = None,
+    speaker_batching: Optional[Dict[str, Any]] = None,
     base_seed: int = 0,
 ) -> Tuple[DataLoader, DataLoader, DataLoader]:
     print("[VocalMorph Dataset] Loading splits:")
@@ -491,6 +522,21 @@ def build_dataloaders_from_dirs(
                     speaker_batching.get("singleton_speakers_per_batch", 8)
                 ),
                 clips_per_speaker=clips_per_speaker,
+                base_seed=int(base_seed),
+                drop_last=False,
+            )
+        elif batching_mode == "height_balanced":
+            train_batch_sampler = BalancedHeightAwareSpeakerBatchSampler(
+                train_ds.speaker_to_indices(),
+                speaker_metadata=train_ds.speaker_metadata(),
+                speakers_per_batch=speakers_per_batch,
+                clips_per_speaker=clips_per_speaker,
+                height_bin_weights=speaker_batching.get("height_bin_weights"),
+                total_examples=len(train_ds),
+                balance_gender=bool(speaker_batching.get("balance_gender", True)),
+                gender_balance_strength=float(
+                    speaker_batching.get("gender_balance_strength", 0.20)
+                ),
                 base_seed=int(base_seed),
                 drop_last=False,
             )

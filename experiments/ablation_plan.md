@@ -18,6 +18,10 @@
 - `stage1_aggregation_only`
 - `stage2_speaker_structured_no_physics`
 - `stage3_speaker_alignment`
+- `stage3c_height_only_regularized`
+- `stage3d_height_only_slice_aligned`
+- `stage3e_height_only_stable_bin_weighted`
+- `stage3f_height_only_long_stable`
 - `stage4_learned_reliability`
 - `stage5_physics_smart`
 - `stage6_flagship`
@@ -37,4 +41,11 @@
 ## Immediate Next Line
 - Stage 2 should keep `height_mae_speaker` as the primary monitor.
 - Omega pooling should stay logged as a diagnostic-only metric until a redesigned pooling method proves a real lift.
-- Speaker-structured batching and speaker-level losses are now the highest-value next experiments.
+- Stop spending time on pooling tricks or speaker-batching structures.
+- Next stage: `stage3e_height_only_stable_bin_weighted`
+  - hypothesis: Stage 3c preserved the stronger strict-test behavior, while Stage 3d improved short-slice pressure and the gap but became unstable under the speaker-batched regime; Stage 3e keeps the Stage 3c backbone and plain shuffled batches, adds only gentle hard-slice weighting plus smoothing, and removes restart-heavy scheduler pressure
+  - why it could beat `4.611 / 6.157`: it preserves the best evidence-backed no-physics training path, attacks short-height brittleness directly, and avoids the instability pattern that made Stage 3d unpromotable
+  - early kill rule: kill if seed 11 is still above `4.8 cm` validation speaker MAE by epoch 5, still above a `+2.0 cm` train/val speaker gap by epoch 5, or shows no material short-height speaker improvement
+- Long-run candidate: `stage3f_height_only_long_stable`
+  - hypothesis: the best current evidence still comes from the simpler Stage 3c objective, so the highest-confidence 50-epoch shot is to keep that objective intact and only remove the warm-restart schedule that can destabilize late epochs
+  - why it could beat `4.611 / 6.157`: it keeps the cleanest no-physics line and gives it a longer, restart-free decay path instead of adding more speaker-level machinery that has not earned promotion

@@ -10,7 +10,11 @@ from src.models.vocalmorph_v2.reliability import (
     compose_handcrafted_clip_reliability,
     omega_reliability_pool,
 )
-from src.preprocessing.samplers import GroupedSpeakerBatchSampler, HybridSpeakerBatchSampler
+from src.preprocessing.samplers import (
+    BalancedHeightAwareSpeakerBatchSampler,
+    GroupedSpeakerBatchSampler,
+    HybridSpeakerBatchSampler,
+)
 
 
 def test_handcrafted_reliability_is_deterministic_and_bounded():
@@ -130,3 +134,56 @@ def test_hybrid_speaker_batch_sampler_keeps_more_speaker_diversity():
     count_histogram = sorted(speaker_counts.values())
     assert len(speaker_counts) == 4
     assert count_histogram == [1, 1, 2, 2]
+
+
+def test_height_balanced_sampler_is_deterministic_and_preserves_budget():
+    speaker_to_indices = {
+        "spk_short_f": [0, 1, 2],
+        "spk_short_m": [3, 4, 5],
+        "spk_medium_f": [6, 7, 8],
+        "spk_medium_m": [9, 10, 11],
+        "spk_tall_m": [12, 13, 14],
+    }
+    speaker_metadata = {
+        "spk_short_f": {"height_bin": "short", "gender": 0},
+        "spk_short_m": {"height_bin": "short", "gender": 1},
+        "spk_medium_f": {"height_bin": "medium", "gender": 0},
+        "spk_medium_m": {"height_bin": "medium", "gender": 1},
+        "spk_tall_m": {"height_bin": "tall", "gender": 1},
+    }
+    sampler_a = BalancedHeightAwareSpeakerBatchSampler(
+        speaker_to_indices,
+        speaker_metadata=speaker_metadata,
+        speakers_per_batch=2,
+        clips_per_speaker=2,
+        total_examples=15,
+        base_seed=29,
+    )
+    sampler_b = BalancedHeightAwareSpeakerBatchSampler(
+        speaker_to_indices,
+        speaker_metadata=speaker_metadata,
+        speakers_per_batch=2,
+        clips_per_speaker=2,
+        total_examples=15,
+        base_seed=29,
+    )
+    sampler_a.set_epoch(4)
+    sampler_b.set_epoch(4)
+
+    batches_a = list(iter(sampler_a))
+    batches_b = list(iter(sampler_b))
+    assert batches_a == batches_b
+    assert len(sampler_a) == 4
+    assert all(len(batch) == 4 for batch in batches_a)
+
+    index_to_speaker = {}
+    for speaker_id, indices in speaker_to_indices.items():
+        for idx in indices:
+            index_to_speaker[idx] = speaker_id
+    for batch in batches_a:
+        speakers = {index_to_speaker[idx] for idx in batch}
+        assert len(speakers) == 2
+
+    state = sampler_a.state_dict()
+    sampler_b.load_state_dict(state)
+    assert sampler_b.state_dict() == state

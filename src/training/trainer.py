@@ -342,20 +342,24 @@ class VocalMorphTrainer:
             weight_decay=opt_cfg.get("weight_decay", 0.01),
             betas=tuple(opt_cfg.get("betas", [0.9, 0.999])),
         )
+        self.base_lrs = [float(group["lr"]) for group in self.optimizer.param_groups]
 
         sched_cfg = train_cfg.get("scheduler", {})
-        self.scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
-            self.optimizer,
-            T_0=sched_cfg.get("T_0", 10),
-            T_mult=sched_cfg.get("T_mult", 2),
-            eta_min=sched_cfg.get("eta_min", 1e-5),
-        )
+        self.scheduler_type = str(
+            sched_cfg.get("type", "cosine_annealing_warm_restarts")
+        ).strip()
+        self.scheduler = self._build_scheduler(sched_cfg)
 
         self.scaler = torch.cuda.amp.GradScaler(enabled=self.use_amp)
 
         gc_cfg = train_cfg.get("gradient_clipping", {})
         self.grad_clip = (
             gc_cfg.get("max_norm", 1.0) if gc_cfg.get("enabled", True) else None
+        )
+        self.feature_smoothing_std = float(train_cfg.get("feature_smoothing_std", 0.0))
+        self.lr_warmup_epochs = max(0, int(train_cfg.get("lr_warmup_epochs", 0)))
+        self.lr_warmup_start_factor = float(
+            train_cfg.get("lr_warmup_start_factor", 0.25)
         )
 
         es_cfg = train_cfg.get("early_stopping", {})
@@ -436,6 +440,16 @@ class VocalMorphTrainer:
                 f"| GRL lambda in [{self.grl_lambda_min}, {self.grl_lambda_max}]"
             )
         print(f"[Trainer] Grad accumulation: {self.gradient_accumulation_steps}")
+        if self.feature_smoothing_std > 0.0:
+            print(
+                f"[Trainer] Feature smoothing: std={self.feature_smoothing_std:.4f}"
+            )
+        if self.lr_warmup_epochs > 0:
+            print(
+                f"[Trainer] LR warmup: epochs={self.lr_warmup_epochs} "
+                f"| start_factor={self.lr_warmup_start_factor:.3f}"
+            )
+        print(f"[Trainer] Scheduler: {self.scheduler_type}")
         print(f"[Trainer] Early stop monitor: {self.es_monitor} ({self.es_mode})")
         print(f"[Trainer] Checkpoint monitor: {self.ckpt_monitor} ({self.ckpt_mode})")
         print(
@@ -693,6 +707,63 @@ class VocalMorphTrainer:
                 out[k] = v
         return out
 
+    def _apply_feature_smoothing(
+        self, sequence: torch.Tensor, padding_mask: Optional[torch.Tensor]
+    ) -> torch.Tensor:
+        if self.feature_smoothing_std <= 0.0:
+            return sequence
+        smoothed = sequence.clone()
+        noise = torch.randn_like(smoothed) * float(self.feature_smoothing_std)
+        if isinstance(padding_mask, torch.Tensor):
+            noise = noise.masked_fill(padding_mask.unsqueeze(-1), 0.0)
+        return smoothed + noise
+
+    def _set_step_learning_rate(self, epoch: int, step_idx: int, n_steps: int) -> None:
+        if self.lr_warmup_epochs <= 0 or epoch > self.lr_warmup_epochs:
+            return
+        total_steps = max(1, self.lr_warmup_epochs * max(1, n_steps))
+        current_step = ((max(1, int(epoch)) - 1) * max(1, n_steps)) + int(step_idx) + 1
+        progress = min(1.0, max(0.0, float(current_step) / float(total_steps)))
+        factor = self.lr_warmup_start_factor + (
+            (1.0 - self.lr_warmup_start_factor) * progress
+        )
+        for base_lr, group in zip(self.base_lrs, self.optimizer.param_groups):
+            group["lr"] = float(base_lr) * float(factor)
+
+    def _build_scheduler(
+        self, sched_cfg: Mapping[str, Any]
+    ) -> torch.optim.lr_scheduler._LRScheduler | torch.optim.lr_scheduler.CosineAnnealingWarmRestarts:
+        scheduler_type = str(
+            sched_cfg.get("type", "cosine_annealing_warm_restarts")
+        ).strip().lower()
+        eta_min = float(sched_cfg.get("eta_min", 1e-5))
+        if scheduler_type in {
+            "cosine_annealing_warm_restarts",
+            "warm_restarts",
+            "cosine_warm_restarts",
+        }:
+            return torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+                self.optimizer,
+                T_0=max(1, int(sched_cfg.get("T_0", 10))),
+                T_mult=max(1, int(sched_cfg.get("T_mult", 2))),
+                eta_min=eta_min,
+            )
+        if scheduler_type in {"cosine_annealing", "cosine", "cosine_decay"}:
+            t_max = max(
+                1,
+                int(
+                    sched_cfg.get(
+                        "T_max", sched_cfg.get("T_0", max(1, int(self.epochs)))
+                    )
+                ),
+            )
+            return torch.optim.lr_scheduler.CosineAnnealingLR(
+                self.optimizer,
+                T_max=t_max,
+                eta_min=eta_min,
+            )
+        raise ValueError(f"Unsupported scheduler type: {scheduler_type}")
+
     def _clip_metadata_from_batch(self, batch: Mapping[str, Any]) -> Dict[str, torch.Tensor]:
         metadata: Dict[str, torch.Tensor] = {}
         for key in (
@@ -830,6 +901,11 @@ class VocalMorphTrainer:
         train_mode: bool = True,
         targets: Optional[Dict[str, torch.Tensor]] = None,
     ):
+        sequence = batch["sequence"]
+        if train_mode and self.feature_smoothing_std > 0.0:
+            sequence = self._apply_feature_smoothing(
+                sequence, batch.get("padding_mask")
+            )
         kwargs = {
             "padding_mask": batch["padding_mask"],
             "clip_metadata": self._clip_metadata_from_batch(batch),
@@ -848,7 +924,7 @@ class VocalMorphTrainer:
                 kwargs["targets"] = targets
                 if epoch is not None:
                     kwargs["current_epoch"] = int(epoch)
-        return self.model(batch["sequence"], **kwargs)
+        return self.model(sequence, **kwargs)
 
     def _ensemble_predictions(self, batch) -> Optional[Dict[str, torch.Tensor]]:
         if not self.eval_use_ensemble or not hasattr(
@@ -1218,6 +1294,7 @@ class VocalMorphTrainer:
         n_steps = len(self.train_loader)
         self.optimizer.zero_grad(set_to_none=True)
         for step_idx, batch in enumerate(self.train_loader):
+            self._set_step_learning_rate(epoch, step_idx, n_steps)
             batch = self._to_device(batch)
             targets = self._build_targets(batch, epoch=epoch)
 
