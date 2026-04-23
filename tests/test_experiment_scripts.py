@@ -64,6 +64,43 @@ def test_summarize_metrics_reports_mean_and_std():
     assert baseline["final_test_height_mae_speaker_mean"] == 2.65
 
 
+def test_omega_stage3d_stable_preserves_stage3d_with_monotonic_cosine():
+    stage = OMEGA_STAGES["stage3d_height_only_slice_aligned_stable"]
+    overrides = stage["overrides"]
+    base = OMEGA_STAGES["stage3d_height_only_slice_aligned"]["overrides"]
+
+    assert stage["monitor"] == "height_mae_speaker"
+    # Scheduler is the single intended change: monotonic cosine, no restarts.
+    assert overrides["training.scheduler.type"] == "cosine_annealing"
+    assert overrides["training.scheduler.T_max"] == 10
+    assert overrides["training.scheduler.eta_min"] == 1.0e-05
+
+    # Every Stage 3d component that is not the scheduler must be preserved.
+    preserved_keys = [
+        "training.speaker_batching.enabled",
+        "training.speaker_batching.mode",
+        "training.speaker_batching.speakers_per_batch",
+        "training.speaker_batching.clips_per_speaker",
+        "training.speaker_batching.height_bin_weights.short",
+        "training.speaker_alignment.enable_pooled_height",
+        "training.speaker_alignment.enable_consistency",
+        "training.speaker_alignment.enable_ranking",
+        "training.speaker_alignment.pooling_method",
+        "training.speaker_alignment.consistency_mode",
+        "training.speaker_alignment.pooled_height_weight_max",
+        "training.speaker_alignment.consistency_weight_max",
+        "training.speaker_alignment.ranking_weight_max",
+        "training.speaker_alignment.height_bin_loss_weight_short",
+        "training.feature_smoothing_std",
+        "training.lr_warmup_epochs",
+        "training.lr_warmup_start_factor",
+        "training.optimizer.lr",
+        "training.optimizer.weight_decay",
+    ]
+    for key in preserved_keys:
+        assert overrides[key] == base[key], f"Stage 3d-stable changed {key}"
+
+
 def test_omega_stage3e_is_registered_with_stable_scheduler():
     stage = OMEGA_STAGES["stage3e_height_only_stable_bin_weighted"]
     overrides = stage["overrides"]
