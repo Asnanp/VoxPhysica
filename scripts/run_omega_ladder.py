@@ -319,6 +319,10 @@ OMEGA_STAGES: Dict[str, Dict[str, Any]] = {
             "model.v2.conformer_d_model": 64,
             "model.v2.conformer_blocks": 1,
             "model.v2.dropout": 0.25,
+            # Raise the NLL variance floor to stop the heteroscedastic head
+            # from driving train loss arbitrarily negative and val NLL from
+            # exploding. sqrt(1e-2) = 0.1 in normalized target space.
+            "model.v2.nll_floor": 1.0e-2,
             "model.v2.toggles.use_physics_branch": False,
             "model.v2.toggles.use_cross_attention": False,
             "model.v2.toggles.use_reliability_gate": False,

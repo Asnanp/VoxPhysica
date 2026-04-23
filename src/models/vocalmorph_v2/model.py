@@ -386,6 +386,7 @@ class VocalMorphV2(nn.Module):
             target_stats=target_stats,
             focal_after_epoch=self.focal_after_epoch,
             ranking_margin=self.ranking_margin,
+            nll_floor=float(self.hyperparameters.nll_floor),
             constants=self.constants,
             toggles=self.toggles,
             loss_weights=self.loss_weights,

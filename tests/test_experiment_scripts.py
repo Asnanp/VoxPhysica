@@ -70,12 +70,19 @@ def test_omega_stage3d_stable_preserves_stage3d_with_monotonic_cosine():
     base = OMEGA_STAGES["stage3d_height_only_slice_aligned"]["overrides"]
 
     assert stage["monitor"] == "height_mae_speaker"
-    # Scheduler is the single intended change: monotonic cosine, no restarts.
+    # Scheduler is the first intended change: monotonic cosine, no restarts.
     assert overrides["training.scheduler.type"] == "cosine_annealing"
     assert overrides["training.scheduler.T_max"] == 10
     assert overrides["training.scheduler.eta_min"] == 1.0e-05
+    # Second intended change: raise the NLL variance floor to prevent the
+    # heteroscedastic head from collapsing predicted variance. The original
+    # Stage 3d inherits the model default of 1e-6, so this key must be
+    # unset on the base config and explicitly set on the stable variant.
+    assert "model.v2.nll_floor" not in base
+    assert overrides["model.v2.nll_floor"] == 1.0e-2
 
-    # Every Stage 3d component that is not the scheduler must be preserved.
+    # Every Stage 3d component that is not the scheduler or nll_floor
+    # must be preserved.
     preserved_keys = [
         "training.speaker_batching.enabled",
         "training.speaker_batching.mode",

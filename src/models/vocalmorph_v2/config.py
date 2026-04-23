@@ -161,6 +161,12 @@ class ModelHyperparameters:
     mixup_alpha: float = 0.2
     focal_after_epoch: int = 20
     ranking_margin: float = 0.10
+    # Minimum clamp for exp(logvar) in the heteroscedastic NLL head. The
+    # default preserves historical behavior; raising it prevents predicted
+    # variance from collapsing toward zero, which otherwise lets the NLL
+    # term `0.5 * logvar` drive total loss arbitrarily negative and makes
+    # held-out NLL explode when the model is confidently wrong.
+    nll_floor: float = 1e-6
     physics_embedding_dim: int = 128
     physics_fusion_dim: int = 128
     fused_dim: int = 256
