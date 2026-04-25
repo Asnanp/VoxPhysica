@@ -1,0 +1,315 @@
+project:
+  name: VocalMorph
+  version: "2.1.0"
+  author: Asnan P
+  description: Strict audited VocalMorph V2 baseline for unseen-speaker evaluation
+
+data:
+  nisp_dir: data/nisp/
+  raw_dir: data/raw/
+  processed_dir: data/processed/
+  features_dir: data/features_audited/
+  augmented_dir: data/augmented/
+  split_manifests:
+    train: data/splits/train_clean.csv
+    val: data/splits/val_clean.csv
+    test: data/splits/test_clean.csv
+  targets:
+    - height_cm
+    - weight_kg
+    - age
+    - gender
+  sample_rate: 16000
+  max_audio_duration: 10
+  min_audio_duration: 2
+  split:
+    train: 0.80
+    val: 0.10
+    test: 0.10
+    stratify_by: source_gender_height_age_weight
+    random_seed: 95
+
+features:
+  strict: true
+  require_parselmouth: true
+  normalize_spectral: true
+  audit:
+    strict_backend_check: true
+    require_parselmouth: true
+  mfcc:
+    n_mfcc: 40
+    n_fft: 512
+    hop_length: 160
+    win_length: 400
+    include_delta: true
+    include_delta_delta: true
+  formants:
+    n_formants: 4
+    max_formant: 5500
+    window_length: 0.025
+  pitch:
+    method: praat
+    min_pitch: 50
+    max_pitch: 500
+  spectral:
+    centroid: true
+    rolloff: true
+    flux: true
+    bandwidth: true
+    contrast: true
+  vtl:
+    estimate: true
+    speed_of_sound: 34000
+  voice_quality:
+    jitter: true
+    shimmer: true
+    hnr: true
+
+model:
+  name: VocalMorphV2
+  type: strict_small_physics
+  v2:
+    ecapa_channels: 128
+    ecapa_scale: 4
+    conformer_d_model: 64
+    conformer_heads: 4
+    conformer_blocks: 1
+    dropout: 0.35
+    branch_dropout: 0.20
+    drop_path_rate: 0.10
+    height_context_hidden_dim: 192
+    height_context_blocks: 2
+    height_context_scale: 0.35
+    height_bin_hidden_dim: 96
+    height_bin_classes: 3
+    aggregation:
+      method: legacy_inverse_variance
+      omega_mad_z: 2.5
+      omega_min_survivors: 3
+      omega_huber_delta_scale: 1.25
+    reliability:
+      mode: handcrafted
+      use_feature_drift: true
+      min_weight: 0.05
+      hidden_dim: 32
+      embedding_dim: 16
+    toggles:
+      use_physics_branch: true
+      use_cross_attention: true
+      use_reliability_gate: true
+      use_height_prior: true
+      use_height_adapter: true
+      use_domain_adv: false
+      use_diversity_loss: false
+      use_feature_mixup: false
+      use_feature_normalization: true
+      use_acoustic_physics_consistency: true
+      use_ranking_loss: false
+      use_speaker_consistency: false
+      use_uncertainty_calibration: false
+      use_shoulder_head: false
+      use_waist_head: false
+      use_kendall_weights: false
+      use_height_context_refiner: false
+      use_height_bin_aux: false
+    loss_weights:
+      height: 3.0
+      weight: 1.0
+      age: 1.0
+      shoulder: 0.0
+      waist: 0.0
+      gender: 0.5
+      vtsl: 0.2
+      physics_penalty: 0.1
+      domain_adv: 0.0
+      ranking: 0.0
+      diversity: 0.0
+      speaker_consistency: 0.0
+      uncertainty_calibration: 0.0
+      height_bin_aux: 0.0
+
+physics:
+  enabled: true
+  vtl_height_constraint:
+    enabled: true
+    ratio: 6.7
+    penalty_weight: 0.1
+  formant_vtl_constraint:
+    enabled: true
+    speed_of_sound: 34000
+    penalty_weight: 0.1
+  f0_gender_constraint:
+    enabled: true
+    male_f0_range: [85, 180]
+    female_f0_range: [165, 265]
+    penalty_weight: 0.05
+
+training:
+  seed: 42
+  epochs: 50
+  batch_size: 16
+  gradient_accumulation_steps: 1
+  num_workers: 2
+  persistent_workers: true
+  prefetch_factor: 2
+  device: auto
+  amp: true
+  mixed_precision: true
+  allow_tf32: false
+  max_feature_frames: 960
+  train_crop_mode: random
+  eval_crop_mode: center
+  augmentation:
+    enabled: true
+    noise_p: 0.40
+    noise_std: 0.01
+    time_mask_p: 0.20
+    time_mask_max_frac: 0.08
+    feat_mask_p: 0.15
+    feat_mask_max_frac: 0.05
+    scale_p: 0.20
+    scale_std: 0.04
+    temporal_jitter_p: 0.15
+    temporal_jitter_max_frac: 0.03
+    speed_perturb_p: 1.0
+    speed_perturb_rates: [0.9, 1.0, 1.1]
+  ema:
+    enabled: true
+    decay: 0.9995
+    update_every: 1
+    warmup_steps: 0
+    use_for_eval: true
+  swa:
+    enabled: false
+    start_frac: 0.75
+    anneal_epochs: 10
+    use_for_eval: false
+  optimizer:
+    type: adamw
+    lr: 0.00003
+    weight_decay: 0.01
+    betas: [0.9, 0.999]
+  scheduler:
+    type: cosine_annealing
+    T_max: 50
+    min_lr: 0.000001
+    eta_min: 0.000001
+  loss:
+    type: vtsl_v2
+    focal_after_epoch: 3
+    focal_ema_decay: 0.90
+    task_weights:
+      height: 3.0
+      weight: 1.0
+      age: 1.0
+      gender: 0.5
+      vtsl: 0.2
+      physics_penalty: 0.1
+      domain_adv: 0.0
+    use_gender_class_weights: true
+    physics_penalty_weight: 0.1
+    domain_grl_lambda_min: 0.0
+    domain_grl_lambda_max: 0.0
+  speaker_batching:
+    enabled: false
+    mode: grouped
+    speakers_per_batch: 8
+    clips_per_speaker: 2
+    paired_speakers_per_batch: 4
+    singleton_speakers_per_batch: 8
+    balance_gender: true
+    gender_balance_strength: 0.20
+    height_bin_weights:
+      short: 3.5
+      medium: 1.0
+      tall: 1.3
+  speaker_alignment:
+    enable_pooled_height: false
+    enable_consistency: false
+    enable_ranking: false
+    pooling_method: omega
+    consistency_mode: pairwise_weighted
+    warmup_start_epoch: 3
+    warmup_end_epoch: 8
+    pooled_height_weight_max: 0.35
+    consistency_weight_max: 0.15
+    ranking_weight_max: 0.10
+    ranking_min_height_delta_cm: 2.0
+    ranking_margin_cm: 0.5
+    consistency_max_combined_std_cm: 5.0
+    height_bin_loss_start_epoch: 1
+    height_bin_loss_weight_short: 1.0
+    height_bin_loss_weight_medium: 1.0
+    height_bin_loss_weight_tall: 1.0
+    short_height_threshold_cm: 160.0
+    short_height_loss_weight: 2.5
+  feature_smoothing_std: 0.0
+  lr_warmup_epochs: 0
+  lr_warmup_start_factor: 0.25
+  early_stopping:
+    enabled: true
+    patience: 15
+    monitor: height_mae_speaker
+    mode: min
+  gradient_clipping:
+    enabled: true
+    max_norm: 1.0
+
+evaluation:
+  targets:
+    height_mae_cm: 3.0
+    weight_mae_kg: 5.0
+    age_mae_years: 5.0
+    gender_accuracy: 0.95
+  inference:
+    use_ensemble: true
+    deterministic: true
+    n_samples: 4
+    n_crops: 3
+    crop_size: 96
+
+logging:
+  wandb:
+    enabled: false
+    project: VocalMorph
+    entity: asnanp
+  tensorboard:
+    enabled: true
+    log_dir: outputs/strict/logs/
+  checkpoint:
+    dir: outputs/strict/checkpoints/
+    save_top_k: 3
+    monitor: height_mae_speaker
+    mode: min
+
+inference:
+  checkpoint: outputs/strict/checkpoints/best.ckpt
+  mc_samples: 50
+  deterministic_ensemble: true
+  n_crops: 3
+  crop_size: 96
+  output_uncertainty: true
+  output_dir: outputs/strict/predictions/
+  quality_gate:
+    enabled: true
+    strict: true
+    min_capture_quality_score: 0.55
+    min_speech_ratio: 0.55
+    min_snr_db: 10.0
+    max_distance_cm: 30.0
+    max_clipped_ratio: 0.03
+    require_quality_ok: false
+    min_accepted_clips: 2
+    max_height_std_cm: 8.0
+    min_confidence_score: 0.35
+    max_ood_zscore: 4.0
+  audio_enhancement:
+    enabled: true
+    vad_aggressiveness: 2
+    spectral_gate_strength: 1.35
+    spectral_gate_floor: 0.10
+    trim_db: 28.0
+    min_speech_ratio: 0.45
+    min_snr_db: 8.0
+    max_clipped_ratio: 0.02
+    max_distance_cm: 45.0

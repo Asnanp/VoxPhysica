@@ -1,0 +1,220 @@
+project:
+  name: VocalMorph
+  version: "2.0.0"
+  author: Asnan P
+  description: ECAPA-TDNN multi-task voice-to-biometric prediction
+
+data:
+  nisp_dir: data/nisp/
+  raw_dir: data/raw/
+  processed_dir: data/processed/
+  features_dir: data/features/
+  augmented_dir: data/augmented/
+
+  targets:
+    - height_cm
+    - weight_kg
+    - age
+    - gender
+
+  sample_rate: 16000
+  max_audio_duration: 10
+  min_audio_duration: 2
+
+  split:
+    train: 0.70
+    val: 0.15
+    test: 0.15
+    stratify_by: gender
+    random_seed: 42
+
+features:
+  mfcc:
+    n_mfcc: 40
+    n_fft: 512
+    hop_length: 160
+    win_length: 400
+    include_delta: true
+    include_delta_delta: true
+
+  formants:
+    n_formants: 4
+    max_formant: 5500
+    window_length: 0.025
+
+  pitch:
+    method: "praat"
+    min_pitch: 50
+    max_pitch: 500
+
+  spectral:
+    centroid: true
+    rolloff: true
+    flux: true
+    bandwidth: true
+    contrast: true
+
+  vtl:
+    estimate: true
+    speed_of_sound: 34000
+
+  voice_quality:
+    jitter: true
+    shimmer: true
+    hnr: true
+
+model:
+  name: VocalMorphV2
+  type: dual_path_ecapa_conformer_monotonic
+
+  v2:
+    ecapa_channels: 512
+    ecapa_scale: 8
+    ecapa_embedding_dim: 192
+
+    conformer_d_model: 256
+    conformer_heads: 8
+    conformer_blocks: 4
+
+    dropout: 0.3
+
+physics:
+  enabled: true
+
+  vtl_height_constraint:
+    enabled: true
+    ratio: 6.7
+    penalty_weight: 0.1
+
+  formant_vtl_constraint:
+    enabled: true
+    speed_of_sound: 34000
+    penalty_weight: 0.1
+
+  f0_gender_constraint:
+    enabled: true
+    male_f0_range: [85, 180]
+    female_f0_range: [165, 265]
+    penalty_weight: 0.05
+
+training:
+  seed: 46
+  epochs: 75
+  batch_size: 16
+  gradient_accumulation_steps: 2
+  num_workers: 2
+  persistent_workers: true
+  prefetch_factor: 2
+  device: cuda
+  amp: true
+  mixed_precision: true
+  allow_tf32: true
+  max_feature_frames: 960
+  train_crop_mode: random
+  eval_crop_mode: center
+  ema:
+    enabled: true
+    decay: 0.9995
+    update_every: 1
+    warmup_steps: 0
+    use_for_eval: true
+
+  optimizer:
+    type: adamw
+    lr: 0.00003
+    weight_decay: 0.05
+    betas: [0.9, 0.999]
+
+  scheduler:
+    type: cosine_annealing_warm_restarts
+    T_0: 10
+    T_mult: 2
+    min_lr: 0.000001
+    eta_min: 0.000001
+
+  loss:
+    type: vtsl_v2
+
+    task_weights:
+      height: 3.0
+      weight: 1.0
+      age: 1.0
+      gender: 0.5
+      vtsl: 0.2
+      physics_penalty: 0.1
+      domain_adv: 0.05
+
+    use_gender_class_weights: true
+    physics_penalty_weight: 0.1
+
+  speaker_alignment:
+    short_height_threshold_cm: 160.0
+    short_height_loss_weight: 2.5
+
+  early_stopping:
+    enabled: true
+    patience: 12
+    monitor: height_mae_speaker
+    mode: min
+
+  gradient_clipping:
+    enabled: true
+    max_norm: 1.0
+
+evaluation:
+  targets:
+    height_mae_cm: 3.0
+    weight_mae_kg: 5.0
+    age_mae_years: 5.0
+    gender_accuracy: 0.95
+  inference:
+    use_ensemble: true
+    deterministic: true
+    n_samples: 4
+    n_crops: 3
+    crop_size: 256
+
+logging:
+  wandb:
+    enabled: false
+    project: VocalMorph
+    entity: asnanp
+
+  tensorboard:
+    enabled: true
+    log_dir: outputs/logs_rtx3060_75ep/
+
+  checkpoint:
+    dir: outputs/checkpoints_rtx3060_75ep/
+    save_top_k: 3
+    monitor: height_mae_speaker
+    mode: min
+
+inference:
+  checkpoint: outputs/checkpoints_rtx3060_75ep/best.ckpt
+  mc_samples: 50
+  deterministic_ensemble: true
+  n_crops: 5
+  crop_size: 256
+  output_uncertainty: true
+  output_dir: outputs/predictions_rtx3060_75ep/
+  quality_gate:
+    enabled: true
+    strict: true
+    min_capture_quality_score: 0.55
+    min_speech_ratio: 0.55
+    min_snr_db: 10.0
+    max_distance_cm: 30.0
+    max_clipped_ratio: 0.03
+    require_quality_ok: false
+    min_accepted_clips: 2
+  audio_enhancement:
+    enabled: true
+    vad_aggressiveness: 2
+    spectral_gate_strength: 1.35
+    spectral_gate_floor: 0.10
+    trim_db: 28.0
+    min_speech_ratio: 0.45
+    min_snr_db: 8.0
+    max_clipped_ratio: 0.02
+    max_distance_cm: 45.0

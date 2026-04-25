@@ -1,0 +1,58 @@
+# ============================================================
+# VocalMorph — Requirements
+# ============================================================
+
+# Core
+torch>=2.1.0
+torchaudio>=2.1.0
+numpy>=1.24.0
+pandas>=2.0.0
+scipy>=1.11.0
+
+# Bayesian
+pyro-ppl>=1.8.6
+
+# Audio Feature Extraction
+librosa>=0.10.0
+opensmile>=2.4.2
+praat-parselmouth>=0.4.3
+
+# Config Management
+hydra-core>=1.3.0
+omegaconf>=2.3.0
+
+# Experiment Tracking
+wandb>=0.16.0
+tensorboard>=2.14.0
+
+# Optimization
+optuna>=3.4.0
+
+# Visualization
+matplotlib>=3.7.0
+seaborn>=0.13.0
+plotly>=5.18.0
+
+# API (inference serving)
+fastapi>=0.104.0
+uvicorn>=0.24.0
+python-multipart>=0.0.6
+
+# Utilities
+tqdm>=4.66.0
+scikit-learn>=1.3.0
+joblib>=1.3.0
+
+# Testing
+pytest>=7.4.0
+pytest-cov>=4.1.0
+
+# Audio I/O
+soundfile>=0.12.1
+audioread>=3.0.1
+webrtcvad>=2.0.10
+
+# Augmentation
+audiomentations>=0.37.0
+sounddevice>=0.4.7
+

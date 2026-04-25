@@ -1,0 +1,164 @@
+# ============================================================
+# VocalMorph V3 — Nuclear Height Estimation Config
+# ============================================================
+# Optimized for RTX 3060 (12GB VRAM)
+# Unified training for ALL heights. No short/tall segmentation.
+# Deep Conformer + height-focused loss = target 2-3cm MAE.
+
+project:
+  name: VocalMorph-V3
+  version: "3.0.0"
+  author: Asnan P
+  description: Nuclear redesign for 2-3cm MAE height estimation
+
+data:
+  features_dir: data/features_audited/
+  split_manifests:
+    train: data/splits/train_clean.csv
+    val: data/splits/val_clean.csv
+    test: data/splits/test_clean.csv
+  sample_rate: 16000
+
+features:
+  strict: true
+  require_parselmouth: true
+  normalize_spectral: true
+  audit:
+    strict_backend_check: true
+    require_parselmouth: true
+  mfcc:
+    n_mfcc: 40
+    n_fft: 512
+    hop_length: 160
+    win_length: 400
+    include_delta: true
+    include_delta_delta: true
+  formants:
+    n_formants: 4
+    max_formant: 5500
+    window_length: 0.025
+  pitch:
+    method: praat
+    min_pitch: 50
+    max_pitch: 500
+  spectral:
+    centroid: true
+    rolloff: true
+    flux: true
+    bandwidth: true
+    contrast: true
+  vtl:
+    estimate: true
+    speed_of_sound: 34000
+
+model:
+  name: VocalMorphV3
+  input_dim: 136
+  v3:
+    # High Precision Architecture - Capacity expanded for 1cm limit hunt
+    d_model: 512
+    n_heads: 8
+    n_blocks: 6
+    ff_expansion: 4
+    conv_kernel: 15
+    dropout: 0.35
+    drop_path: 0.10
+    pool_heads: 4
+    pool_hidden: 128
+
+training:
+  seed: 123
+  epochs: 100
+  batch_size: 32
+  gradient_accumulation_steps: 16 # effective batch = 128
+  num_workers: 4
+  prefetch_factor: 2
+  persistent_workers: true
+  device: auto
+  amp: true
+  mixed_precision: true
+  allow_tf32: true
+  max_feature_frames: 768
+  train_crop_mode: random
+  eval_crop_mode: center
+
+  # Height Balanced batching for exact 1cm boundaries
+  speaker_batching:
+    enabled: true
+    mode: height_balanced
+    speakers_per_batch: 4
+    clips_per_speaker: 2
+    balance_gender: true
+    gender_balance_strength: 0.50
+
+  # Offloading to GPU: CPU augmentations DISABLED to prevent overheating
+  augmentation:
+    enabled: false
+
+  # EMA for smoother evaluation
+  ema:
+    enabled: true
+    decay: 0.999
+    update_every: 1
+    warmup_steps: 200
+    use_for_eval: true
+
+  # SWA for flat minima — start late
+  swa:
+    enabled: true
+    start_frac: 0.75
+    anneal_epochs: 15
+    use_for_eval: false
+
+  optimizer:
+    type: adamw
+    lr: 0.0003
+    weight_decay: 0.10
+    betas: [0.9, 0.98]
+
+  scheduler:
+    type: cosine_annealing_warm_restarts
+    T_0: 25
+    T_mult: 2
+    eta_min: 0.000001
+
+  # Height-focused loss
+  # Critical focus: use delta=0.02 so Huber behaves like L1 loss (no flat gradient zone near target)
+  loss:
+    huber_delta: 0.02
+    huber_weight: 1.0
+    ranking_weight: 0.3
+    ranking_margin: 0.15
+    gender_weight: 0.1
+    label_smoothing: 0.05
+
+  # No speaker batching — plain shuffled
+  speaker_batching:
+    enabled: false
+
+  # Linear LR warmup
+  lr_warmup_epochs: 5
+  lr_warmup_start_factor: 0.01
+
+  # Feature smoothing during training
+  feature_smoothing_std: 0.02
+
+  early_stopping:
+    enabled: true
+    patience: 30
+    monitor: height_mae_speaker
+    mode: min
+
+  gradient_clipping:
+    enabled: true
+    max_norm: 1.0
+
+logging:
+  tensorboard:
+    enabled: true
+    log_dir: outputs/v3/logs/
+  checkpoint:
+    dir: outputs/v3/checkpoints/
+    save_top_k: 3
+    monitor: height_mae_speaker
+    mode: min
