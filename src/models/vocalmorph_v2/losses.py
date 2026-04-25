@@ -210,22 +210,43 @@ class VocalTractSimulatorLossV2(nn.Module):
             per_sample = per_sample * weights
 
         height_raw = targets.get("height_raw")
-        if height_raw is not None and current_epoch >= int(
+        height_raw_valid: Optional[torch.Tensor] = None
+        if height_raw is not None:
+            height_raw_valid = height_raw.to(device=device, dtype=torch.float32)[valid]
+        else:
+            stats = self._get_target_stats(preds)
+            if stats is not None:
+                height_raw_valid = _denorm_tensor(target, "height", stats).to(
+                    device=device, dtype=torch.float32
+                )
+
+        short_threshold = float(self.speaker_alignment.short_height_threshold_cm)
+        short_weight = float(self.speaker_alignment.short_height_loss_weight)
+        if height_raw_valid is not None and short_weight > 0.0:
+            short_mask = (height_raw_valid < short_threshold).to(per_sample.dtype)
+            per_sample = per_sample + short_weight * short_mask * residual
+
+        tall_threshold = float(self.speaker_alignment.tall_height_threshold_cm)
+        tall_weight = float(self.speaker_alignment.tall_height_loss_weight)
+        if height_raw_valid is not None and tall_weight > 0.0:
+            tall_mask = (height_raw_valid >= tall_threshold).to(per_sample.dtype)
+            per_sample = per_sample + tall_weight * tall_mask * residual
+
+        if height_raw_valid is not None and current_epoch >= int(
             self.speaker_alignment.height_bin_loss_start_epoch
         ):
             short_w = float(self.speaker_alignment.height_bin_loss_weight_short)
             medium_w = float(self.speaker_alignment.height_bin_loss_weight_medium)
             tall_w = float(self.speaker_alignment.height_bin_loss_weight_tall)
             if max(abs(short_w - 1.0), abs(medium_w - 1.0), abs(tall_w - 1.0)) > 1e-6:
-                height_raw = height_raw.to(device=device, dtype=torch.float32)[valid]
                 sample_weights = torch.full_like(per_sample, medium_w)
                 sample_weights = torch.where(
-                    height_raw < 160.0,
+                    height_raw_valid < 160.0,
                     torch.full_like(sample_weights, short_w),
                     sample_weights,
                 )
                 sample_weights = torch.where(
-                    height_raw >= 175.0,
+                    height_raw_valid >= 175.0,
                     torch.full_like(sample_weights, tall_w),
                     sample_weights,
                 )
@@ -255,6 +276,57 @@ class VocalTractSimulatorLossV2(nn.Module):
         if valid.sum() == 0:
             return torch.zeros((), device=device)
         return self._smooth_ce(logits[valid], target_long[valid])
+
+    def _height_bin_aux_loss(
+        self,
+        preds: Mapping[str, torch.Tensor],
+        targets: Mapping[str, torch.Tensor],
+        device: torch.device,
+    ) -> torch.Tensor:
+        if not self.toggles.use_height_bin_aux:
+            return torch.zeros((), device=device)
+        logits = preds.get("height_bin_logits")
+        height_raw = targets.get("height_raw")
+        if logits is None or height_raw is None:
+            return torch.zeros((), device=device)
+
+        height_raw = height_raw.to(device=device, dtype=torch.float32)
+        valid = torch.isfinite(height_raw)
+        if valid.sum() == 0:
+            return torch.zeros((), device=device)
+
+        logits_valid = logits[valid]
+        height_valid = height_raw[valid]
+        n_classes = int(logits_valid.size(-1))
+        if n_classes == 3:
+            boundaries = torch.tensor([160.0, 175.0], device=device)
+        elif n_classes == 4:
+            boundaries = torch.tensor([158.0, 166.0, 175.0], device=device)
+        elif n_classes == 5:
+            boundaries = torch.tensor([155.0, 162.0, 170.0, 178.0], device=device)
+        else:
+            boundaries = torch.linspace(
+                158.0, 182.0, steps=n_classes - 1, device=device
+            )
+        labels = torch.bucketize(height_valid, boundaries).long()
+
+        per_sample = F.cross_entropy(logits_valid, labels, reduction="none")
+        short_w = float(self.speaker_alignment.height_bin_loss_weight_short)
+        medium_w = float(self.speaker_alignment.height_bin_loss_weight_medium)
+        tall_w = float(self.speaker_alignment.height_bin_loss_weight_tall)
+        sample_weights = torch.full_like(per_sample, medium_w)
+        sample_weights = torch.where(
+            height_valid < 160.0,
+            torch.full_like(sample_weights, short_w),
+            sample_weights,
+        )
+        sample_weights = torch.where(
+            height_valid >= 175.0,
+            torch.full_like(sample_weights, tall_w),
+            sample_weights,
+        )
+        sample_weights = sample_weights / sample_weights.mean().clamp(min=1e-6)
+        return (per_sample * sample_weights).mean()
 
     def _domain_loss(
         self,
@@ -792,6 +864,7 @@ class VocalTractSimulatorLossV2(nn.Module):
             preds, targets, "waist", device, mask_key="waist_mask"
         )
         gender_loss = self._gender_loss(preds, targets, device)
+        height_bin_aux_loss = self._height_bin_aux_loss(preds, targets, device)
         domain_loss = self._domain_loss(preds, targets, device)
         vtsl_loss = self._vtsl_loss(preds, targets, device)
         physics_penalty = self._physics_penalty(preds, device)
@@ -829,6 +902,7 @@ class VocalTractSimulatorLossV2(nn.Module):
             "shoulder": shoulder_loss,
             "waist": waist_loss,
             "gender": gender_loss,
+            "height_bin_aux": height_bin_aux_loss,
             "vtsl": vtsl_loss,
             "physics_penalty": physics_penalty,
             "diversity": diversity_loss,
@@ -855,6 +929,7 @@ class VocalTractSimulatorLossV2(nn.Module):
             + self.loss_weights.shoulder * losses["shoulder"]
             + self.loss_weights.waist * losses["waist"]
             + self.loss_weights.gender * losses["gender"]
+            + self.loss_weights.height_bin_aux * losses["height_bin_aux"]
             + self.loss_weights.vtsl * losses["vtsl"]
             + self.loss_weights.physics_penalty * losses["physics_penalty"]
             + self.loss_weights.domain_adv * losses["domain_adv"]

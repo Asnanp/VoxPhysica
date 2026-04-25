@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 import numpy as np
 from scipy import signal
@@ -18,6 +18,8 @@ except Exception:
 
 @dataclass
 class AugmentationConfig:
+    speed_perturb_p: float = 0.0
+    speed_perturb_rates: Tuple[float, ...] = (1.0,)
     noise_p: float = 0.35
     time_stretch_p: float = 0.35
     pitch_shift_p: float = 0.35
@@ -89,6 +91,26 @@ def _normalize_audio(audio: np.ndarray) -> np.ndarray:
     if peak > 1.0:
         arr = arr / peak
     return np.clip(arr, -1.0, 1.0).astype(np.float32, copy=False)
+
+
+def _speed_rates(cfg: AugmentationConfig) -> Tuple[float, ...]:
+    rates = []
+    for value in tuple(cfg.speed_perturb_rates):
+        try:
+            rate = float(value)
+        except (TypeError, ValueError):
+            continue
+        if rate > 0.0:
+            rates.append(rate)
+    return tuple(rates) if rates else (1.0,)
+
+
+def _speed_perturb(audio: np.ndarray, rate: float) -> np.ndarray:
+    if audio.size == 0 or abs(float(rate) - 1.0) < 1e-6:
+        return np.asarray(audio, dtype=np.float32, copy=True)
+    target_len = max(1, int(round(audio.shape[0] / float(rate))))
+    resampled = signal.resample(np.asarray(audio, dtype=np.float32), target_len)
+    return resampled.astype(np.float32, copy=False)
 
 
 def _colored_noise(length: int, sample_rate: int, rng: np.random.Generator) -> np.ndarray:
@@ -222,8 +244,11 @@ def apply_augmentations(
     cfg = config or AugmentationConfig()
     rng = _rng()
     variants: List[np.ndarray] = []
-    for _ in range(n_variants):
+    speed_rates = _speed_rates(cfg)
+    for variant_idx in range(n_variants):
         aug = np.asarray(audio, dtype=np.float32).copy()
+        if speed_rates and rng.random() < float(np.clip(cfg.speed_perturb_p, 0.0, 1.0)):
+            aug = _speed_perturb(aug, speed_rates[variant_idx % len(speed_rates)])
         if augmenter is not None:
             aug = augmenter(samples=aug, sample_rate=sample_rate)
         aug = apply_custom_augmentations(aug, sample_rate, config=cfg, rng=rng)

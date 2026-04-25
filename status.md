@@ -49,6 +49,11 @@
   - extends the run to `50` epochs
   - uses monotonic cosine decay with `T_max=50`
   - runs in a separate user-visible PowerShell terminal so it is not bound to Codex command timeouts
+- Implemented a proper height-first VocalMorph V2 rebuild path:
+  - dedicated height-context refiner conditioned on acoustic, fusion, and audited reliability signals
+  - auxiliary height-bin head to regularize short/medium/tall structure without changing the strict monitor
+  - opt-in toggles so historical stages stay reproducible
+  - new Omega stage `stage4_proper_v2_height_first` wired for plain shuffled training and legacy aggregation
 
 ## Evidence Update
 - `stage0_baseline_truth`: `kill`
@@ -129,6 +134,7 @@
 - Stage 3c is now replicated on three seeds, and the result is mixed rather than cleanly stable.
 - Stage 3d seed `11` improved validation and the train/val speaker gap, but it did not clear the old strict test frontier and still showed a late collapse.
 - The long-run height-only follow-up (`stage3f_height_only_long_stable`) beat the old frontier on this single seed, but it peaked early, the gap reopened, and validation quality-medium speakers remained unstable.
+- The new proper-V2 rebuild is implemented but untested on the strict ladder; it is a new architecture/objective line, not evidence yet.
 - Learned reliability mode is still scaffolding until a strict training stage proves it helps.
 - Physics remains unearned against the no-physics line.
 - Both speaker-batching redesigns have now failed, which raises confidence that batching structure is not the main frontier bottleneck.
@@ -158,3 +164,12 @@
     - best legacy speaker MAE `4.527 cm` at epoch `5`
     - strict legacy test `5.802 cm`
     - no promotion earned from this single seed
+- Next prepared rebuild line: `stage4_proper_v2_height_first`
+  - hypothesis: current V2 still predicts height from an overly shared fused vector; a dedicated height pathway plus small structural supervision should improve short-slice robustness and make early gains more stable
+  - key changes: height-context refiner, height-bin auxiliary loss, moderate capacity increase, plain shuffled batches, legacy aggregation primary
+  - first-run target: seed `11` only
+  - active run launched:
+    - `C:\Users\USER\anaconda3\python.exe scripts\run_omega_ladder.py --only stage4_proper_v2_height_first --seeds 11 --epochs 10 --run --python C:\Users\USER\anaconda3\python.exe`
+  - live artifacts:
+    - `outputs/omega/stage4_proper_v2_height_first/proper_v2_height_first_no_physics/seed_11/train.stdout.log`
+    - `outputs/omega/stage4_proper_v2_height_first/proper_v2_height_first_no_physics/seed_11/train.stderr.log`

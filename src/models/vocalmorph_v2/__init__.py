@@ -19,6 +19,8 @@ from .config import (
 from .heads import (
     AcousticPhysicsConsistencyHead,
     BayesianHeightHead,
+    HeightBinClassificationHead,
+    HeightConditionedRefiner,
     HeightFeatureAdapter,
     HeightPriorHead,
     MCRegressionHead,
@@ -99,6 +101,8 @@ __all__ = [
     "ForwardDiagnostics",
     "GradientReversalFunction",
     "GradientReversalLayer",
+    "HeightBinClassificationHead",
+    "HeightConditionedRefiner",
     "HeightFeatureAdapter",
     "HeightPriorHead",
     "LayerScale",

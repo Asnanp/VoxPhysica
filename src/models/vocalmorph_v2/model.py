@@ -39,6 +39,8 @@ from .config import (
 from .heads import (
     AcousticPhysicsConsistencyHead,
     BayesianHeightHead,
+    HeightBinClassificationHead,
+    HeightConditionedRefiner,
     HeightFeatureAdapter,
     HeightPriorHead,
     ProbabilisticRegressionHead,
@@ -56,7 +58,11 @@ from .layers import (
 )
 from .losses import KendallMultiTaskLoss, VocalTractSimulatorLossV2
 from .physics import PhysicsPath
-from .reliability import MetadataReliabilityTower, compose_clip_reliability
+from .reliability import (
+    MetadataReliabilityTower,
+    RELIABILITY_FEATURE_DIM,
+    compose_clip_reliability,
+)
 from .types import RegressionHeadOutput, RegressionUncertaintySummary
 from .utils import (
     _clone_tensor_mapping,
@@ -213,6 +219,26 @@ class VocalMorphV2(nn.Module):
             raise ValueError(
                 f"height_adapter_scale must be >= 0, got {self.hyperparameters.height_adapter_scale}"
             )
+        if self.hyperparameters.height_context_hidden_dim < 1:
+            raise ValueError(
+                f"height_context_hidden_dim must be >= 1, got {self.hyperparameters.height_context_hidden_dim}"
+            )
+        if self.hyperparameters.height_context_blocks < 1:
+            raise ValueError(
+                f"height_context_blocks must be >= 1, got {self.hyperparameters.height_context_blocks}"
+            )
+        if self.hyperparameters.height_context_scale < 0.0:
+            raise ValueError(
+                f"height_context_scale must be >= 0, got {self.hyperparameters.height_context_scale}"
+            )
+        if self.hyperparameters.height_bin_hidden_dim < 1:
+            raise ValueError(
+                f"height_bin_hidden_dim must be >= 1, got {self.hyperparameters.height_bin_hidden_dim}"
+            )
+        if self.hyperparameters.height_bin_classes < 3:
+            raise ValueError(
+                f"height_bin_classes must be >= 3, got {self.hyperparameters.height_bin_classes}"
+            )
 
         self.physics_embedding_dim = self.hyperparameters.physics_embedding_dim
         self.physics_fusion_dim = self.hyperparameters.physics_fusion_dim
@@ -301,6 +327,30 @@ class VocalMorphV2(nn.Module):
             hidden_dim=self.hyperparameters.height_adapter_hidden_dim,
             dropout=self.hyperparameters.branch_dropout,
             adapter_scale=self.hyperparameters.height_adapter_scale,
+        )
+        self.height_context_refiner = (
+            HeightConditionedRefiner(
+                fused_dim=self.hyperparameters.fused_dim,
+                acoustic_dim=self.hyperparameters.conformer_d_model,
+                physics_dim=self.physics_fusion_dim,
+                reliability_dim=RELIABILITY_FEATURE_DIM,
+                hidden_dim=self.hyperparameters.height_context_hidden_dim,
+                num_blocks=self.hyperparameters.height_context_blocks,
+                dropout=self.hyperparameters.branch_dropout,
+                context_scale=self.hyperparameters.height_context_scale,
+            )
+            if self.toggles.use_height_context_refiner
+            else None
+        )
+        self.height_bin_head = (
+            HeightBinClassificationHead(
+                in_dim=self.hyperparameters.fused_dim,
+                hidden_dim=self.hyperparameters.height_bin_hidden_dim,
+                n_classes=self.hyperparameters.height_bin_classes,
+                dropout=self.hyperparameters.branch_dropout,
+            )
+            if self.toggles.use_height_bin_aux
+            else None
         )
         self.physics_height_residual = nn.Sequential(
             nn.LayerNorm(self.physics_embedding_dim),
@@ -464,6 +514,8 @@ class VocalMorphV2(nn.Module):
             ],
             "heads": [
                 self.height_head,
+                self.height_context_refiner,
+                self.height_bin_head,
                 self.physics_height_residual,
                 self.weight_head,
                 self.age_head,
@@ -1027,6 +1079,9 @@ class VocalMorphV2(nn.Module):
         reliability_embedding = reliability_outputs["reliability_embedding"].to(
             device=device, dtype=features.dtype
         )
+        reliability_features = reliability_outputs["features"].to(
+            device=device, dtype=features.dtype
+        )
 
         acoustic = self.acoustic_path(features, padding_mask=mask)
         physics = self.physics_path(features, padding_mask=mask)
@@ -1128,14 +1183,31 @@ class VocalMorphV2(nn.Module):
         fusion_vec = self.conditional_ln(fusion_vec, domain=domain)
         fused = self.fusion_out_norm(self.fusion_proj(fusion_vec))
         if self.toggles.use_height_adapter:
-            height_features = self.height_adapter(
+            base_height_features = self.height_adapter(
                 fused_embedding=fused,
                 physics_embedding=physics_embedding,
                 physics_gate=physics_gate,
                 quality_score=quality_score,
             )
         else:
-            height_features = fused
+            base_height_features = fused
+        if (
+            self.toggles.use_height_context_refiner
+            and self.height_context_refiner is not None
+        ):
+            height_features = self.height_context_refiner(
+                base_height_features=base_height_features,
+                acoustic_embedding=acoustic_embedding,
+                cross_embedding=cross_out,
+                physics_embedding=physics_fused,
+                reliability_features=reliability_features,
+                prior_summary=height_prior_summary,
+                quality_score=quality_score,
+                usable_clip_probability=usable_clip_probability,
+                physics_gate=physics_gate,
+            )
+        else:
+            height_features = base_height_features
 
         weight_pred = self._run_regression_head(self.weight_head, fused)
         age_pred = self._run_regression_head(self.age_head, fused)
@@ -1178,6 +1250,10 @@ class VocalMorphV2(nn.Module):
             physics_residual=physics_residual if use_physics_branch else None,
             prior_residual=prior_height if self.toggles.use_height_prior else None,
         )
+        if self.toggles.use_height_bin_aux and self.height_bin_head is not None:
+            height_bin_logits = self.height_bin_head(height_features)
+        else:
+            height_bin_logits = None
 
         if self.toggles.use_domain_adv:
             adv_in = self.grl(fused, lambda_override=lambda_grl)
@@ -1286,6 +1362,7 @@ class VocalMorphV2(nn.Module):
             ],
             "height_prior_summary": height_prior_summary,
             "fused_embedding": fused,
+            "height_features_base": base_height_features,
             "height_features": height_features,
             "height_prior": prior_height,
             "height_physics_residual": physics_residual,
@@ -1336,6 +1413,8 @@ class VocalMorphV2(nn.Module):
             "clip_metadata": normalized_clip_metadata,
             "target_stats": self.target_stats,
         }
+        if height_bin_logits is not None:
+            output["height_bin_logits"] = height_bin_logits
         self._append_regression_output(
             output,
             "height",
@@ -1913,6 +1992,8 @@ def build_vocalmorph_v2(config: dict) -> VocalMorphV2:
         "use_uncertainty_calibration",
         "use_shoulder_head",
         "use_waist_head",
+        "use_height_context_refiner",
+        "use_height_bin_aux",
     )
     toggle_cfg = dict(v2_cfg.get("toggles", {}))
     for key in legacy_toggle_keys:

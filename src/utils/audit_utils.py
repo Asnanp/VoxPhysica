@@ -55,7 +55,7 @@ def read_csv_rows(path: str) -> List[Dict[str, str]]:
 
 
 def normalize_path(path: str) -> str:
-    return os.path.normcase(os.path.abspath(path))
+    return os.path.normcase(os.path.realpath(os.path.abspath(path)))
 
 
 def iter_row_audio_paths(row: Mapping[str, Any]) -> List[str]:

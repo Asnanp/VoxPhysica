@@ -197,3 +197,16 @@
   - short-height validation improved materially versus the earlier height-only lines, especially in epochs `4-8`
   - the line still failed to consolidate: the train speaker error kept falling much faster than validation, the final gap reopened to `+2.309 cm`, and validation quality-medium speakers remained unstable
   - decision stays `hold`; promising, but not promotable from this single seed
+## stage3f_height_only_long_stable / seed 11
+- Variant: `height_only_long_stable_no_physics`
+- Mode: `train`
+- Decision: `hold`
+- Notes: training completed; metrics captured; promotion requires ladder-stage review
+- Config diff: `C:\Users\USER\OneDrive\Desktop\VoxPhysica\outputs/omega_best_push\stage3f_height_only_long_stable\height_only_long_stable_no_physics\seed_11\config_diff.json`
+
+- Legacy val/test speaker MAE: `4.482` / `6.124`
+- Omega val/test speaker MAE: `4.448` / `6.239`
+- Train->val gaps: legacy `-0.063`, omega `-0.127`
+- Critical slices: legacy[src=0.384,gender=0.732,height=2.207,quality=4.324]; omega[src=0.300,gender=0.832,height=2.644,quality=4.039]; max_deg=0.365
+- Calibration: cal=4.355, corr=0.121, p68=0.362, p95=0.621
+

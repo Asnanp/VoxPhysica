@@ -84,3 +84,30 @@ def test_omega_stage3f_is_registered_as_stage3c_style_long_run():
     assert overrides["training.scheduler.T_max"] == 50
     assert overrides["training.loss.task_weights.height"] == 4.0
     assert overrides["training.speaker_alignment.enable_pooled_height"] is False
+
+
+def test_omega_stage4_proper_v2_height_first_is_registered():
+    stage = OMEGA_STAGES["stage4_proper_v2_height_first"]
+    overrides = stage["overrides"]
+    assert stage["monitor"] == "height_mae_speaker"
+    assert overrides["model.v2.toggles.use_physics_branch"] is False
+    assert overrides["model.v2.toggles.use_height_context_refiner"] is True
+    assert overrides["model.v2.toggles.use_height_bin_aux"] is True
+    assert overrides["model.v2.loss_weights.height_bin_aux"] == 0.25
+    assert overrides["training.speaker_batching.enabled"] is False
+    assert overrides["training.scheduler.type"] == "cosine_annealing"
+
+
+def test_omega_stage3g_is_registered_with_stronger_regularization():
+    stage = OMEGA_STAGES["stage3g_height_only_strong_reg"]
+    overrides = stage["overrides"]
+    assert stage["monitor"] == "height_mae_speaker"
+    assert overrides["model.v2.dropout"] == 0.35
+    assert overrides["model.v2.branch_dropout"] == 0.20
+    assert overrides["model.v2.drop_path_rate"] == 0.10
+    assert overrides["training.scheduler.type"] == "cosine_annealing"
+    assert overrides["training.scheduler.T_max"] == 50
+    assert overrides["training.loss.focal_after_epoch"] == 3
+    assert overrides["training.loss.focal_ema_decay"] == 0.90
+    assert overrides["training.ema.decay"] == 0.999
+    assert overrides["training.speaker_alignment.height_bin_loss_weight_short"] == 3.5

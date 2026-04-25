@@ -38,19 +38,19 @@ class FeatureAugmentConfig:
 
     # Gaussian noise
     noise_p: float = 0.50
-    noise_std: float = 0.02
+    noise_std: float = 0.01
 
     # Time masking (SpecAugment-style)
-    time_mask_p: float = 0.40
+    time_mask_p: float = 0.20
     time_mask_max_frac: float = 0.10  # max 10% of sequence length
 
     # Feature dimension masking
-    feat_mask_p: float = 0.30
+    feat_mask_p: float = 0.15
     feat_mask_max_frac: float = 0.08  # max 8% of feature dims
 
     # Feature scaling (per-utterance gain)
     scale_p: float = 0.35
-    scale_std: float = 0.08
+    scale_std: float = 0.04
 
     # Temporal jitter (random frame dropout)
     temporal_jitter_p: float = 0.25

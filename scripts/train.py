@@ -333,6 +333,12 @@ def main():
             train_cfg.get("gradient_accumulation_steps", 1),
             "training.gradient_accumulation_steps",
         )
+        if train_cfg.get("amp") is not None:
+            train_cfg["amp"] = _coerce_bool(train_cfg["amp"], "training.amp")
+        if train_cfg.get("mixed_precision") is not None:
+            train_cfg["mixed_precision"] = _coerce_bool(
+                train_cfg["mixed_precision"], "training.mixed_precision"
+            )
         if train_cfg.get("max_feature_frames") is not None:
             train_cfg["max_feature_frames"] = _coerce_int(
                 train_cfg["max_feature_frames"], "training.max_feature_frames"
@@ -412,13 +418,13 @@ def main():
         if train_augment:
             augment_config = FeatureAugmentConfig(
                 noise_p=float(aug_cfg_raw.get("noise_p", 0.50)),
-                noise_std=float(aug_cfg_raw.get("noise_std", 0.02)),
-                time_mask_p=float(aug_cfg_raw.get("time_mask_p", 0.40)),
+                noise_std=float(aug_cfg_raw.get("noise_std", 0.01)),
+                time_mask_p=float(aug_cfg_raw.get("time_mask_p", 0.20)),
                 time_mask_max_frac=float(aug_cfg_raw.get("time_mask_max_frac", 0.10)),
-                feat_mask_p=float(aug_cfg_raw.get("feat_mask_p", 0.30)),
+                feat_mask_p=float(aug_cfg_raw.get("feat_mask_p", 0.15)),
                 feat_mask_max_frac=float(aug_cfg_raw.get("feat_mask_max_frac", 0.08)),
                 scale_p=float(aug_cfg_raw.get("scale_p", 0.35)),
-                scale_std=float(aug_cfg_raw.get("scale_std", 0.08)),
+                scale_std=float(aug_cfg_raw.get("scale_std", 0.04)),
                 temporal_jitter_p=float(aug_cfg_raw.get("temporal_jitter_p", 0.25)),
                 temporal_jitter_max_frac=float(
                     aug_cfg_raw.get("temporal_jitter_max_frac", 0.05)

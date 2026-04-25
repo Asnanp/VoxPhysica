@@ -58,6 +58,7 @@ class LossWeights:
     diversity: float = 1.0
     speaker_consistency: float = 0.05
     uncertainty_calibration: float = 0.025
+    height_bin_aux: float = 0.0
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -111,6 +112,10 @@ class SpeakerAlignmentConfig:
     height_bin_loss_weight_short: float = 1.0
     height_bin_loss_weight_medium: float = 1.0
     height_bin_loss_weight_tall: float = 1.0
+    short_height_threshold_cm: float = 160.0
+    short_height_loss_weight: float = 0.0
+    tall_height_threshold_cm: float = 175.0
+    tall_height_loss_weight: float = 0.0
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -136,6 +141,8 @@ class AblationToggles:
     use_shoulder_head: bool = True
     use_waist_head: bool = True
     use_kendall_weights: bool = True
+    use_height_context_refiner: bool = False
+    use_height_bin_aux: bool = False
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -168,6 +175,11 @@ class ModelHyperparameters:
     regression_var_scale: float = 0.5
     height_adapter_hidden_dim: int = 128
     height_adapter_scale: float = 0.25
+    height_context_hidden_dim: int = 192
+    height_context_blocks: int = 2
+    height_context_scale: float = 0.35
+    height_bin_hidden_dim: int = 96
+    height_bin_classes: int = 3
     physics_gate_hidden_dim: int = 96
     physics_gate_floor: float = 0.10
     physics_gate_curriculum_epochs: int = 30

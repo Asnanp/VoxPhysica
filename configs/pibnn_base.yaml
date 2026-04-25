@@ -74,7 +74,14 @@ model:
     conformer_d_model: 64
     conformer_heads: 4
     conformer_blocks: 1
-    dropout: 0.15
+    dropout: 0.35
+    branch_dropout: 0.20
+    drop_path_rate: 0.10
+    height_context_hidden_dim: 192
+    height_context_blocks: 2
+    height_context_scale: 0.35
+    height_bin_hidden_dim: 96
+    height_bin_classes: 3
     aggregation:
       method: legacy_inverse_variance
       omega_mad_z: 2.5
@@ -103,6 +110,8 @@ model:
       use_shoulder_head: false
       use_waist_head: false
       use_kendall_weights: false
+      use_height_context_refiner: false
+      use_height_bin_aux: false
     loss_weights:
       height: 3.0
       weight: 1.0
@@ -117,6 +126,7 @@ model:
       diversity: 0.0
       speaker_consistency: 0.0
       uncertainty_calibration: 0.0
+      height_bin_aux: 0.0
 
 physics:
   enabled: true
@@ -143,7 +153,8 @@ training:
   persistent_workers: true
   prefetch_factor: 2
   device: auto
-  mixed_precision: false
+  amp: true
+  mixed_precision: true
   allow_tf32: false
   max_feature_frames: 960
   train_crop_mode: random
@@ -151,18 +162,20 @@ training:
   augmentation:
     enabled: true
     noise_p: 0.40
-    noise_std: 0.015
-    time_mask_p: 0.30
+    noise_std: 0.01
+    time_mask_p: 0.20
     time_mask_max_frac: 0.08
-    feat_mask_p: 0.20
+    feat_mask_p: 0.15
     feat_mask_max_frac: 0.05
     scale_p: 0.20
-    scale_std: 0.05
+    scale_std: 0.04
     temporal_jitter_p: 0.15
     temporal_jitter_max_frac: 0.03
+    speed_perturb_p: 1.0
+    speed_perturb_rates: [0.9, 1.0, 1.1]
   ema:
     enabled: true
-    decay: 0.995
+    decay: 0.9995
     update_every: 1
     warmup_steps: 0
     use_for_eval: true
@@ -173,16 +186,18 @@ training:
     use_for_eval: false
   optimizer:
     type: adamw
-    lr: 0.0005
+    lr: 0.00003
     weight_decay: 0.01
     betas: [0.9, 0.999]
   scheduler:
-    type: cosine_annealing_warm_restarts
-    T_0: 8
-    T_mult: 1
-    eta_min: 0.00001
+    type: cosine_annealing
+    T_max: 50
+    min_lr: 0.000001
+    eta_min: 0.000001
   loss:
     type: vtsl_v2
+    focal_after_epoch: 3
+    focal_ema_decay: 0.90
     task_weights:
       height: 3.0
       weight: 1.0
@@ -205,9 +220,9 @@ training:
     balance_gender: true
     gender_balance_strength: 0.20
     height_bin_weights:
-      short: 1.8
+      short: 3.5
       medium: 1.0
-      tall: 1.15
+      tall: 1.3
   speaker_alignment:
     enable_pooled_height: false
     enable_consistency: false
@@ -226,12 +241,14 @@ training:
     height_bin_loss_weight_short: 1.0
     height_bin_loss_weight_medium: 1.0
     height_bin_loss_weight_tall: 1.0
+    short_height_threshold_cm: 160.0
+    short_height_loss_weight: 2.5
   feature_smoothing_std: 0.0
   lr_warmup_epochs: 0
   lr_warmup_start_factor: 0.25
   early_stopping:
     enabled: true
-    patience: 10
+    patience: 15
     monitor: height_mae_speaker
     mode: min
   gradient_clipping:

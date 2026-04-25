@@ -23,7 +23,34 @@ import numpy as np
 import torch
 import torch.nn as nn
 import yaml
-from torch.utils.tensorboard import SummaryWriter
+
+
+class _NoOpSummaryWriter:
+    """No-op fallback when TensorBoard is unavailable locally."""
+
+    def add_scalar(self, *args, **kwargs):
+        pass
+
+    def flush(self):
+        pass
+
+    def close(self):
+        pass
+
+
+def _build_summary_writer(log_dir: str, enabled: bool = True):
+    if not enabled:
+        return _NoOpSummaryWriter()
+    try:
+        from torch.utils.tensorboard import SummaryWriter as TorchSummaryWriter
+
+        return TorchSummaryWriter(log_dir=log_dir)
+    except Exception as exc:  # pragma: no cover - environment-specific dependency fault
+        print(
+            "[Trainer] TensorBoard unavailable; continuing without SummaryWriter "
+            f"({exc})"
+        )
+        return _NoOpSummaryWriter()
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(ROOT))
@@ -279,11 +306,13 @@ class VocalMorphTrainer:
         self.last_completed_epoch = 0
 
         train_cfg = config.get("training", {})
+        self.progress_log_interval_steps = max(
+            1, int(train_cfg.get("progress_log_interval_steps", 100))
+        )
         self.epochs = int(train_cfg.get("epochs", 100))
         self.device = self._resolve_device(train_cfg.get("device", "auto"))
-        self.use_amp = (
-            train_cfg.get("mixed_precision", True) and self.device.type == "cuda"
-        )
+        amp_enabled = train_cfg.get("amp", train_cfg.get("mixed_precision", True))
+        self.use_amp = bool(amp_enabled) and self.device.type == "cuda"
         self.gradient_accumulation_steps = max(
             1, int(train_cfg.get("gradient_accumulation_steps", 1))
         )
@@ -301,6 +330,7 @@ class VocalMorphTrainer:
             gender_weights = self._compute_gender_class_weights()
 
         lw = train_cfg.get("loss", {}).get("task_weights", {})
+        loss_cfg = train_cfg.get("loss", {})
         self.use_native_v2_loss = self.loss_type == "vtsl_v2" and hasattr(
             self.model, "loss_module"
         )
@@ -309,7 +339,11 @@ class VocalMorphTrainer:
             if hasattr(self.criterion, "set_target_stats"):
                 self.criterion.set_target_stats(target_stats)
         elif self.loss_type == "vtsl_v2":
-            from src.models.vocalmorphv2 import VocalTractSimulatorLossV2  # noqa: E402
+            from src.models.vocalmorphv2 import (  # noqa: E402
+                SpeakerAlignmentConfig,
+                VocalTractSimulatorLossV2,
+                dataclass_from_mapping,
+            )
 
             vtl_ratio = (
                 config.get("physics", {})
@@ -319,9 +353,15 @@ class VocalMorphTrainer:
             self.criterion = VocalTractSimulatorLossV2(
                 vtl_height_ratio=vtl_ratio,
                 robust_huber_weight=float(
-                    train_cfg.get("loss", {}).get("robust_huber_weight", 0.20)
+                    loss_cfg.get("robust_huber_weight", 0.20)
                 ),
+                focal_after_epoch=int(loss_cfg.get("focal_after_epoch", 20)),
+                focal_ema_decay=float(loss_cfg.get("focal_ema_decay", 0.95)),
                 target_stats=target_stats,
+                speaker_alignment=dataclass_from_mapping(
+                    SpeakerAlignmentConfig,
+                    train_cfg.get("speaker_alignment"),
+                ),
             )
         else:
             self.criterion = VocalMorphLoss(
@@ -329,16 +369,24 @@ class VocalMorphTrainer:
                 weight_weight=lw.get("weight", 1.0),
                 age_weight=lw.get("age", 1.0),
                 gender_weight=lw.get("gender", 2.0),
-                physics_weight=train_cfg.get("loss", {}).get(
-                    "physics_penalty_weight", 0.2
-                ),
+                physics_weight=loss_cfg.get("physics_penalty_weight", 0.2),
                 gender_class_weights=gender_weights,
+            )
+
+        focal_target = getattr(self.criterion, "base_loss", self.criterion)
+        if hasattr(focal_target, "focal_after_epoch"):
+            focal_target.focal_after_epoch = int(
+                loss_cfg.get("focal_after_epoch", focal_target.focal_after_epoch)
+            )
+        if hasattr(focal_target, "focal_ema_decay"):
+            focal_target.focal_ema_decay = float(
+                loss_cfg.get("focal_ema_decay", focal_target.focal_ema_decay)
             )
 
         opt_cfg = train_cfg.get("optimizer", {})
         self.optimizer = torch.optim.AdamW(
             self.model.parameters(),
-            lr=opt_cfg.get("lr", 3e-4),
+            lr=opt_cfg.get("lr", 3e-5),
             weight_decay=opt_cfg.get("weight_decay", 0.01),
             betas=tuple(opt_cfg.get("betas", [0.9, 0.999])),
         )
@@ -374,8 +422,10 @@ class VocalMorphTrainer:
 
         log_cfg = config.get("logging", {})
         tb_dir = log_cfg.get("tensorboard", {}).get("log_dir", "outputs/logs")
-        self.writer = SummaryWriter(
-            log_dir=os.path.join(ROOT, tb_dir) if not os.path.isabs(tb_dir) else tb_dir
+        resolved_tb_dir = os.path.join(ROOT, tb_dir) if not os.path.isabs(tb_dir) else tb_dir
+        self.writer = _build_summary_writer(
+            log_dir=resolved_tb_dir,
+            enabled=bool(log_cfg.get("tensorboard", {}).get("enabled", True)),
         )
 
         ckpt_cfg = log_cfg.get("checkpoint", {})
@@ -736,7 +786,7 @@ class VocalMorphTrainer:
         scheduler_type = str(
             sched_cfg.get("type", "cosine_annealing_warm_restarts")
         ).strip().lower()
-        eta_min = float(sched_cfg.get("eta_min", 1e-5))
+        eta_min = float(sched_cfg.get("min_lr", sched_cfg.get("eta_min", 1e-5)))
         if scheduler_type in {
             "cosine_annealing_warm_restarts",
             "warm_restarts",
@@ -1227,12 +1277,27 @@ class VocalMorphTrainer:
                 for label, mask in subgroup_masks.items():
                     if np.any(mask):
                         metrics_local[label] = float(np.mean(np.abs(height_true_arr[mask] - height_pred_arr[mask])))
+                height_bin_metrics: Dict[str, float] = {}
                 for bin_label in ("short", "medium", "tall"):
                     mask = np.array([height_bin(float(value)) == bin_label for value in height_true_arr], dtype=bool)
                     if np.any(mask):
-                        metrics_local[f"height_heightbin_{bin_label}_speaker_mae{suffix}"] = float(
+                        metric_value = float(
                             np.mean(np.abs(height_true_arr[mask] - height_pred_arr[mask]))
                         )
+                        metrics_local[f"height_heightbin_{bin_label}_speaker_mae{suffix}"] = metric_value
+                        height_bin_metrics[bin_label] = metric_value
+                extreme_values = [
+                    height_bin_metrics[label]
+                    for label in ("short", "tall")
+                    if label in height_bin_metrics
+                ]
+                if extreme_values:
+                    metrics_local[f"height_heightbin_extreme_speaker_mae{suffix}"] = float(
+                        np.mean(np.asarray(extreme_values, dtype=np.float32))
+                    )
+                    metrics_local[
+                        f"height_heightbin_extreme_worst_speaker_mae{suffix}"
+                    ] = float(np.max(np.asarray(extreme_values, dtype=np.float32)))
                 for bin_label in ("short", "medium", "long"):
                     mask = np.array([duration_bin(float(value)) == bin_label for value in duration_arr], dtype=bool)
                     if np.any(mask):
@@ -1281,6 +1346,7 @@ class VocalMorphTrainer:
         self._set_train_epoch(epoch)
         total_losses: Dict[str, float] = {}
         n = 0
+        epoch_start = time.time()
 
         # R-Drop config
         rdrop_enabled = bool(
@@ -1345,10 +1411,9 @@ class VocalMorphTrainer:
                         getattr(self.model, "clip_gradients")
                     ):
                         self.model.clip_gradients()
-                    else:
-                        nn.utils.clip_grad_norm_(
-                            self.model.parameters(), self.grad_clip
-                        )
+                    torch.nn.utils.clip_grad_norm_(
+                        self.model.parameters(), float(self.grad_clip)
+                    )
                 self.scaler.step(self.optimizer)
                 self.scaler.update()
                 self.optimizer.zero_grad(set_to_none=True)
@@ -1358,6 +1423,24 @@ class VocalMorphTrainer:
             for k, v in losses.items():
                 total_losses[k] = total_losses.get(k, 0.0) + float(v.item())
             n += 1
+
+            current_step = step_idx + 1
+            if (
+                current_step % self.progress_log_interval_steps == 0
+                or current_step == n_steps
+            ):
+                avg_total = total_losses.get("total", 0.0) / max(1, n)
+                elapsed = time.time() - epoch_start
+                avg_step_time = elapsed / max(1, current_step)
+                eta_seconds = avg_step_time * max(0, n_steps - current_step)
+                progress = 100.0 * float(current_step) / float(max(1, n_steps))
+                print(
+                    f"[Trainer] Epoch {epoch:03d} step {current_step:04d}/{n_steps:04d} "
+                    f"({progress:5.1f}%) | loss={avg_total:.4f} "
+                    f"| lr={self.optimizer.param_groups[0]['lr']:.6g} "
+                    f"| elapsed={elapsed / 60.0:.1f}m | eta={eta_seconds / 60.0:.1f}m",
+                    flush=True,
+                )
 
         if n == 0:
             return {"total": float("inf")}
@@ -1522,7 +1605,7 @@ class VocalMorphTrainer:
     def train(self):
         print(f"\n{'=' * 60}")
         print(f"  VocalMorph Training - {self.epochs} epochs")
-        print(f"{'=' * 60}\n")
+        print(f"{'=' * 60}\n", flush=True)
 
         for epoch in range(self.start_epoch, self.epochs + 1):
             t0 = time.time()
@@ -1624,12 +1707,40 @@ class VocalMorphTrainer:
                 f"w={val_metrics.get('weight_mae', float('nan')):.2f}kg "
                 f"age={val_metrics.get('age_mae', float('nan')):.1f}yr "
                 f"gender={val_metrics.get('gender_acc', float('nan')) * 100:.1f}% "
-                f"[{elapsed:.1f}s]"
+                f"[{elapsed:.1f}s]",
+                flush=True,
             )
             if train_eval_metrics:
                 print(
                     f"              train_eval_h_spk={train_eval_metrics.get('height_mae_speaker', float('nan')):.2f}cm "
-                    f"| gap={gap:.2f}cm"
+                    f"| gap={gap:.2f}cm",
+                    flush=True,
+                )
+            short_height_speaker = val_metrics.get(
+                "height_heightbin_short_speaker_mae", float("nan")
+            )
+            tall_height_speaker = val_metrics.get(
+                "height_heightbin_tall_speaker_mae", float("nan")
+            )
+            extreme_height_speaker = val_metrics.get(
+                "height_heightbin_extreme_speaker_mae", float("nan")
+            )
+            medium_quality_speaker = val_metrics.get(
+                "height_quality_medium_speaker_mae", float("nan")
+            )
+            if (
+                math.isfinite(float(short_height_speaker))
+                or math.isfinite(float(tall_height_speaker))
+                or math.isfinite(float(extreme_height_speaker))
+                or math.isfinite(float(medium_quality_speaker))
+            ):
+                print(
+                    "              "
+                    f"val_short_h_spk={float(short_height_speaker):.2f}cm "
+                    f"| val_tall_h_spk={float(tall_height_speaker):.2f}cm "
+                    f"| val_edge_h_spk={float(extreme_height_speaker):.2f}cm "
+                    f"| val_qmed_h_spk={float(medium_quality_speaker):.2f}cm",
+                    flush=True,
                 )
 
             ckpt_metric = self._metric_value(

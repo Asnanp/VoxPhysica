@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 import torch
 
+from src.preprocessing.augmentation import AugmentationConfig, apply_augmentations
 from src.preprocessing.feature_extractor import build_feature_config
 from src.utils.audit_utils import feature_contract_payload, validate_feature_contract
 from src.utils.metrics import compute_metrics
@@ -93,3 +94,30 @@ def test_compute_metrics_reports_rmse_median_and_subgroups():
     assert "height_source_nisp_mae" in metrics
     assert "height_duration_short_mae" in metrics
     assert "height_quality_low_mae" in metrics
+
+
+def test_apply_augmentations_supports_speed_perturbation():
+    audio = np.linspace(-0.5, 0.5, 1000, dtype=np.float32)
+    cfg = AugmentationConfig(
+        speed_perturb_p=1.0,
+        speed_perturb_rates=(0.9, 1.1),
+        noise_p=0.0,
+        time_stretch_p=0.0,
+        pitch_shift_p=0.0,
+        gain_p=0.0,
+        bandlimit_p=0.0,
+        clip_p=0.0,
+        dropout_p=0.0,
+        colored_noise_p=0.0,
+        distance_p=0.0,
+    )
+    variants = apply_augmentations(
+        audio,
+        sample_rate=16000,
+        augmenter=None,
+        n_variants=2,
+        config=cfg,
+    )
+    assert len(variants) == 2
+    assert variants[0].shape[0] == int(round(audio.shape[0] / 0.9))
+    assert variants[1].shape[0] == int(round(audio.shape[0] / 1.1))

@@ -22,6 +22,7 @@
 - `stage3d_height_only_slice_aligned`
 - `stage3e_height_only_stable_bin_weighted`
 - `stage3f_height_only_long_stable`
+- `stage4_proper_v2_height_first`
 - `stage4_learned_reliability`
 - `stage5_physics_smart`
 - `stage6_flagship`

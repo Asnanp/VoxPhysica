@@ -8,7 +8,12 @@ from torch.utils.data import DataLoader, Dataset
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 
 from scripts.train import _coerce_int, _resolve_resume_checkpoint
-from src.models.vocalmorphv2 import VocalMorphV2
+from src.models.vocalmorphv2 import (
+    AblationToggles,
+    LossWeights,
+    ModelHyperparameters,
+    VocalMorphV2,
+)
 from src.preprocessing.dataset import collate_fn
 from src.training.trainer import VocalMorphTrainer
 
@@ -146,6 +151,68 @@ def test_v2_trainer_uses_native_loss_and_reports_speaker_metrics(tmp_path):
     assert torch.isfinite(torch.tensor(val_metrics["height_mae_speaker"]))
     assert torch.isfinite(torch.tensor(val_metrics["height_mae_speaker_omega"]))
     assert torch.isfinite(torch.tensor(val_metrics["height_calibration_mae"]))
+    trainer.close()
+
+
+def test_trainer_applies_focal_overrides_to_native_v2_loss(tmp_path):
+    torch.manual_seed(6)
+    target_stats = {
+        "height": {"mean": 172.0, "std": 8.0},
+        "weight": {"mean": 68.0, "std": 10.0},
+        "age": {"mean": 31.0, "std": 7.0},
+    }
+    dataset = _TinyDataset(target_stats)
+    loader = DataLoader(dataset, batch_size=2, shuffle=False, collate_fn=collate_fn)
+
+    model = VocalMorphV2(
+        input_dim=136,
+        ecapa_channels=64,
+        ecapa_scale=4,
+        conformer_d_model=32,
+        conformer_heads=4,
+        conformer_blocks=1,
+        dropout=0.1,
+        target_stats=target_stats,
+    )
+
+    config = {
+        "training": {
+            "epochs": 1,
+            "batch_size": 2,
+            "gradient_accumulation_steps": 1,
+            "num_workers": 0,
+            "device": "cpu",
+            "mixed_precision": False,
+            "ema": {"enabled": False, "decay": 0.99, "use_for_eval": False},
+            "loss": {
+                "type": "vtsl_v2",
+                "use_gender_class_weights": False,
+                "focal_after_epoch": 3,
+                "focal_ema_decay": 0.90,
+            },
+            "optimizer": {"lr": 1e-3, "weight_decay": 0.0, "betas": [0.9, 0.999]},
+            "scheduler": {"type": "cosine_annealing", "T_max": 4, "eta_min": 1e-5},
+            "early_stopping": {"enabled": False, "monitor": "height_mae_speaker", "mode": "min"},
+            "gradient_clipping": {"enabled": True, "max_norm": 1.0},
+        },
+        "evaluation": {"inference": {"use_ensemble": False, "deterministic": True, "n_crops": 1}},
+        "logging": {
+            "tensorboard": {"log_dir": str(tmp_path / "logs")},
+            "checkpoint": {"dir": str(tmp_path / "ckpts"), "save_top_k": 1, "monitor": "height_mae_speaker", "mode": "min"},
+        },
+        "physics": {"vtl_height_constraint": {"ratio": 6.7}},
+    }
+
+    trainer = VocalMorphTrainer(
+        model=model,
+        train_loader=loader,
+        val_loader=loader,
+        config=config,
+        target_stats=target_stats,
+    )
+    focal_target = getattr(trainer.criterion, "base_loss", trainer.criterion)
+    assert focal_target.focal_after_epoch == 3
+    assert focal_target.focal_ema_decay == pytest.approx(0.90)
     trainer.close()
 
 
@@ -462,4 +529,125 @@ def test_trainer_supports_monotonic_cosine_scheduler_without_restart(tmp_path):
     assert trainer.scheduler.__class__.__name__ == "CosineAnnealingLR"
     assert lrs[1] <= lrs[0]
     assert lrs[2] <= lrs[1]
+    trainer.close()
+
+
+def test_height_first_proper_v2_path_emits_auxiliary_height_bin_loss(tmp_path):
+    torch.manual_seed(17)
+    target_stats = {
+        "height": {"mean": 172.0, "std": 8.0},
+        "weight": {"mean": 68.0, "std": 10.0},
+        "age": {"mean": 31.0, "std": 7.0},
+    }
+    dataset = _TinyDataset(target_stats)
+    loader = DataLoader(dataset, batch_size=4, shuffle=False, collate_fn=collate_fn)
+
+    model = VocalMorphV2(
+        input_dim=136,
+        target_stats=target_stats,
+        toggles=AblationToggles(
+            use_physics_branch=False,
+            use_cross_attention=False,
+            use_reliability_gate=False,
+            use_height_prior=False,
+            use_height_adapter=True,
+            use_domain_adv=False,
+            use_diversity_loss=False,
+            use_feature_mixup=False,
+            use_feature_normalization=True,
+            use_acoustic_physics_consistency=False,
+            use_ranking_loss=False,
+            use_speaker_consistency=False,
+            use_uncertainty_calibration=False,
+            use_shoulder_head=False,
+            use_waist_head=False,
+            use_kendall_weights=False,
+            use_height_context_refiner=True,
+            use_height_bin_aux=True,
+        ),
+        loss_weights=LossWeights(
+            height=4.0,
+            weight=0.0,
+            age=0.0,
+            shoulder=0.0,
+            waist=0.0,
+            gender=0.0,
+            vtsl=0.0,
+            physics_penalty=0.0,
+            domain_adv=0.0,
+            ranking=0.0,
+            diversity=0.0,
+            speaker_consistency=0.0,
+            uncertainty_calibration=0.0,
+            height_bin_aux=0.25,
+        ),
+        hyperparameters=ModelHyperparameters(
+            ecapa_channels=64,
+            ecapa_scale=4,
+            conformer_d_model=32,
+            conformer_heads=4,
+            conformer_blocks=1,
+            dropout=0.1,
+            branch_dropout=0.05,
+            height_context_hidden_dim=64,
+            height_context_blocks=2,
+            height_context_scale=0.35,
+            height_bin_hidden_dim=32,
+            height_bin_classes=3,
+            regression_hidden_dim=64,
+            fused_dim=64,
+            physics_embedding_dim=128,
+            physics_fusion_dim=32,
+            height_adapter_hidden_dim=32,
+            physics_gate_hidden_dim=32,
+        ),
+    )
+
+    config = {
+        "training": {
+            "epochs": 1,
+            "batch_size": 4,
+            "gradient_accumulation_steps": 1,
+            "num_workers": 0,
+            "device": "cpu",
+            "mixed_precision": False,
+            "feature_smoothing_std": 0.008,
+            "lr_warmup_epochs": 1,
+            "lr_warmup_start_factor": 0.25,
+            "ema": {"enabled": False, "decay": 0.99, "use_for_eval": False},
+            "loss": {"type": "vtsl_v2", "use_gender_class_weights": False},
+            "optimizer": {"lr": 1e-3, "weight_decay": 0.0, "betas": [0.9, 0.999]},
+            "scheduler": {"type": "cosine_annealing", "T_max": 4, "eta_min": 1e-5},
+            "speaker_alignment": {
+                "enable_pooled_height": False,
+                "enable_consistency": False,
+                "enable_ranking": False,
+                "height_bin_loss_start_epoch": 1,
+                "height_bin_loss_weight_short": 1.35,
+                "height_bin_loss_weight_medium": 1.0,
+                "height_bin_loss_weight_tall": 1.10,
+            },
+            "early_stopping": {"enabled": False, "monitor": "height_mae_speaker", "mode": "min"},
+            "gradient_clipping": {"enabled": True, "max_norm": 1.0},
+        },
+        "evaluation": {"inference": {"use_ensemble": False, "deterministic": True, "n_crops": 1}},
+        "logging": {
+            "tensorboard": {"log_dir": str(tmp_path / "logs")},
+            "checkpoint": {"dir": str(tmp_path / "ckpts"), "save_top_k": 1, "monitor": "height_mae_speaker", "mode": "min"},
+        },
+        "physics": {"vtl_height_constraint": {"ratio": 6.7}},
+    }
+
+    trainer = VocalMorphTrainer(
+        model=model,
+        train_loader=loader,
+        val_loader=loader,
+        config=config,
+        target_stats=target_stats,
+    )
+
+    train_losses = trainer._train_epoch(epoch=1)
+    assert "height_bin_aux" in train_losses
+    assert torch.isfinite(torch.tensor(train_losses["total"]))
+    assert torch.isfinite(torch.tensor(train_losses["height_bin_aux"]))
     trainer.close()

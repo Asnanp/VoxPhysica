@@ -293,9 +293,147 @@ class HeightFeatureAdapter(nn.Module):
         return fused_embedding + self.adapter_scale * torch.tanh(self.net(x))
 
 
+class _ResidualRefinementBlock(nn.Module):
+    """Small gated residual MLP block for task-specific feature refinement."""
+
+    def __init__(self, dim: int, hidden_dim: int, dropout: float = 0.10):
+        super().__init__()
+        self.main = nn.Sequential(
+            nn.LayerNorm(dim),
+            nn.Linear(dim, hidden_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, dim),
+        )
+        self.gate = nn.Sequential(
+            nn.LayerNorm(dim),
+            nn.Linear(dim, dim),
+            nn.Sigmoid(),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        residual = torch.tanh(self.main(x))
+        return x + self.gate(x) * residual
+
+
+class HeightConditionedRefiner(nn.Module):
+    """Build a height-first representation from fused, acoustic, and reliability cues."""
+
+    def __init__(
+        self,
+        fused_dim: int,
+        acoustic_dim: int,
+        physics_dim: int,
+        reliability_dim: int,
+        summary_dim: int = 3,
+        hidden_dim: int = 192,
+        num_blocks: int = 2,
+        dropout: float = 0.10,
+        context_scale: float = 0.35,
+    ):
+        super().__init__()
+        self.context_scale = float(context_scale)
+        context_dim = (
+            fused_dim
+            + acoustic_dim
+            + acoustic_dim
+            + physics_dim
+            + reliability_dim
+            + summary_dim
+            + 3
+        )
+        self.context_proj = nn.Sequential(
+            nn.LayerNorm(context_dim),
+            nn.Linear(context_dim, hidden_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, fused_dim),
+        )
+        self.blocks = nn.ModuleList(
+            [
+                _ResidualRefinementBlock(fused_dim, hidden_dim, dropout=dropout)
+                for _ in range(max(1, int(num_blocks)))
+            ]
+        )
+
+    def forward(
+        self,
+        *,
+        base_height_features: torch.Tensor,
+        acoustic_embedding: torch.Tensor,
+        cross_embedding: torch.Tensor,
+        physics_embedding: torch.Tensor,
+        reliability_features: torch.Tensor,
+        prior_summary: torch.Tensor,
+        quality_score: torch.Tensor,
+        usable_clip_probability: torch.Tensor,
+        physics_gate: torch.Tensor,
+    ) -> torch.Tensor:
+        if base_height_features.ndim != 2:
+            raise ValueError(
+                f"base_height_features must have shape (B, D), got {tuple(base_height_features.shape)}"
+            )
+        if acoustic_embedding.ndim != 2 or cross_embedding.ndim != 2:
+            raise ValueError("acoustic_embedding and cross_embedding must have shape (B, D)")
+        if physics_embedding.ndim != 2 or reliability_features.ndim != 2:
+            raise ValueError("physics_embedding and reliability_features must have shape (B, D)")
+        if prior_summary.ndim != 2:
+            raise ValueError(f"prior_summary must have shape (B, D), got {tuple(prior_summary.shape)}")
+        if quality_score.ndim != 1 or usable_clip_probability.ndim != 1 or physics_gate.ndim != 1:
+            raise ValueError("quality_score, usable_clip_probability, and physics_gate must have shape (B,)")
+
+        context = torch.cat(
+            [
+                base_height_features,
+                acoustic_embedding,
+                cross_embedding,
+                physics_embedding,
+                reliability_features,
+                prior_summary,
+                quality_score.unsqueeze(-1),
+                usable_clip_probability.unsqueeze(-1),
+                physics_gate.unsqueeze(-1),
+            ],
+            dim=-1,
+        )
+        refined = base_height_features + self.context_scale * torch.tanh(
+            self.context_proj(context)
+        )
+        for block in self.blocks:
+            refined = block(refined)
+        return refined
+
+
+class HeightBinClassificationHead(nn.Module):
+    """Auxiliary classification head that regularizes the height representation."""
+
+    def __init__(
+        self,
+        in_dim: int,
+        hidden_dim: int = 96,
+        n_classes: int = 3,
+        dropout: float = 0.10,
+    ):
+        super().__init__()
+        if n_classes < 3:
+            raise ValueError(f"n_classes must be >= 3, got {n_classes}")
+        self.net = nn.Sequential(
+            nn.LayerNorm(in_dim),
+            nn.Linear(in_dim, hidden_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, n_classes),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.net(x)
+
+
 __all__ = [
     "AcousticPhysicsConsistencyHead",
     "BayesianHeightHead",
+    "HeightBinClassificationHead",
+    "HeightConditionedRefiner",
     "HeightFeatureAdapter",
     "HeightPriorHead",
     "MCRegressionHead",

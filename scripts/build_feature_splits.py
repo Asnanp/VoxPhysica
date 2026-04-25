@@ -154,6 +154,19 @@ def _load_config(config_path: str) -> Dict[str, Any]:
         return yaml.safe_load(handle)
 
 
+def _build_audio_augmentation_config(config: Mapping[str, Any]) -> AugmentationConfig:
+    aug_cfg = dict(config.get("training", {}).get("augmentation", {}) or {})
+    speed_rates = tuple(
+        float(rate)
+        for rate in aug_cfg.get("speed_perturb_rates", (1.0,))
+        if float(rate) > 0.0
+    )
+    return AugmentationConfig(
+        speed_perturb_p=float(aug_cfg.get("speed_perturb_p", 0.0)),
+        speed_perturb_rates=speed_rates or (1.0,),
+    )
+
+
 def _build_audio_hash_index(
     split_rows: Mapping[str, List[Dict[str, str]]],
     *,
@@ -239,12 +252,13 @@ def _build_split(
     enhance_audio: bool,
     audio_hashes: Mapping[str, str],
     resume_existing: bool,
+    augmentation_config: AugmentationConfig,
 ) -> Dict[str, Any]:
     split_dir = os.path.join(out_dir, split_name)
     os.makedirs(split_dir, exist_ok=True)
 
     augmenter = build_augmenter() if split_name == "train" else None
-    aug_cfg = AugmentationConfig()
+    aug_cfg = augmentation_config
     enhancement_cfg = MicrophoneEnhancementConfig(enabled=enhance_audio)
     feature_fingerprint = json_fingerprint(feature_config.to_dict())
 
@@ -335,6 +349,10 @@ def _build_split(
                     if aug_name in existing_files:
                         continue
                     aug_feats = extract_all_features(aug_audio, feature_config)
+                    aug_metadata = dict(metadata or {})
+                    aug_metadata["duration_s"] = float(
+                        len(aug_audio) / max(feature_config.sample_rate, 1)
+                    )
                     aug_path = os.path.join(split_dir, aug_name)
                     _save_npz(
                         aug_path,
@@ -342,7 +360,7 @@ def _build_split(
                         row,
                         split_name=split_name,
                         rel_audio_path=rel_audio_path,
-                        load_metadata=metadata,
+                        load_metadata=aug_metadata,
                         is_augmented=True,
                         augmentation_tag=f"aug{aug_idx:02d}",
                         audio_sha256=audio_hashes.get(normalize_path(full_audio_path), ""),
@@ -431,6 +449,7 @@ def main() -> int:
     config_path = _resolve(args.config)
     config = _load_config(config_path)
     feature_config = build_feature_config(config)
+    augmentation_config = _build_audio_augmentation_config(config)
     if args.sample_rate is not None:
         feature_config.sample_rate = int(args.sample_rate)
     if args.n_mfcc is not None:
@@ -480,6 +499,7 @@ def main() -> int:
             enhance_audio=not args.disable_enhancement,
             audio_hashes=audio_hashes,
             resume_existing=args.resume_existing,
+            augmentation_config=augmentation_config,
         )
 
     expected_speakers = {

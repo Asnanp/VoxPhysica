@@ -12,6 +12,8 @@
 | stage3d_height_only_slice_aligned | train | height_only_slice_aligned_no_physics | Stage 3c plus slice-aware speaker sampling, pooled speaker losses, and gentle stability smoothing. |
 | stage3e_height_only_stable_bin_weighted | train | height_only_stable_bin_weighted_no_physics | Stage 3c backbone with gentle hard-slice weighting, feature smoothing, and monotonic cosine decay. |
 | stage3f_height_only_long_stable | train | height_only_long_stable_no_physics | Stage 3c objective and plain shuffled batches, extended to 50 epochs with monotonic cosine decay. |
+| stage3g_height_only_strong_reg | train | height_only_strong_reg_no_physics | Stage 3f height-only line with stronger dropout, earlier focal weighting, stronger short-bin emphasis, and slower EMA. |
+| stage4_proper_v2_height_first | train | proper_v2_height_first_no_physics | Proper VocalMorph V2 rebuild: height-first representation, dedicated context refiner, and slice-aware height-bin auxiliary loss. |
 | stage4_learned_reliability | train | learned_reliability_no_physics | Switch from handcrafted reliability to the learned metadata tower. |
 | stage5_physics_smart | train | physics_smart | Reintroduce the approved physics components only after the no-physics frontier improves. |
 | stage6_flagship | train | flagship_candidate | Combined flagship candidate using only individually promoted Omega components. |
