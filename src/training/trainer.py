@@ -1298,6 +1298,42 @@ class VocalMorphTrainer:
                     metrics_local[
                         f"height_heightbin_extreme_worst_speaker_mae{suffix}"
                     ] = float(np.max(np.asarray(extreme_values, dtype=np.float32)))
+                short_metric = height_bin_metrics.get("short")
+                tall_metric = height_bin_metrics.get("tall")
+                overall_metric = metrics_local.get(f"height_mae_speaker{suffix}")
+                extreme_metric = metrics_local.get(f"height_heightbin_extreme_speaker_mae{suffix}")
+                extreme_worst_metric = metrics_local.get(
+                    f"height_heightbin_extreme_worst_speaker_mae{suffix}"
+                )
+                if (
+                    short_metric is not None
+                    and tall_metric is not None
+                    and overall_metric is not None
+                    and extreme_metric is not None
+                    and extreme_worst_metric is not None
+                ):
+                    balance_gap = float(abs(short_metric - tall_metric))
+                    metrics_local[f"height_edge_balance_gap_speaker_mae{suffix}"] = balance_gap
+                    metrics_local[f"height_balanced_frontier_speaker_mae{suffix}"] = float(
+                        np.mean(
+                            np.asarray(
+                                [
+                                    float(overall_metric),
+                                    float(extreme_metric),
+                                    float(extreme_worst_metric),
+                                    balance_gap,
+                                ],
+                                dtype=np.float32,
+                            )
+                        )
+                    )
+                    metrics_local[f"height_edge_guarded_frontier_speaker_mae{suffix}"] = float(
+                        max(
+                            float(overall_metric),
+                            float(short_metric),
+                            float(tall_metric),
+                        )
+                    )
                 for bin_label in ("short", "medium", "long"):
                     mask = np.array([duration_bin(float(value)) == bin_label for value in duration_arr], dtype=bool)
                     if np.any(mask):
@@ -1725,6 +1761,12 @@ class VocalMorphTrainer:
             extreme_height_speaker = val_metrics.get(
                 "height_heightbin_extreme_speaker_mae", float("nan")
             )
+            balanced_frontier_speaker = val_metrics.get(
+                "height_balanced_frontier_speaker_mae", float("nan")
+            )
+            guarded_frontier_speaker = val_metrics.get(
+                "height_edge_guarded_frontier_speaker_mae", float("nan")
+            )
             medium_quality_speaker = val_metrics.get(
                 "height_quality_medium_speaker_mae", float("nan")
             )
@@ -1732,6 +1774,8 @@ class VocalMorphTrainer:
                 math.isfinite(float(short_height_speaker))
                 or math.isfinite(float(tall_height_speaker))
                 or math.isfinite(float(extreme_height_speaker))
+                or math.isfinite(float(balanced_frontier_speaker))
+                or math.isfinite(float(guarded_frontier_speaker))
                 or math.isfinite(float(medium_quality_speaker))
             ):
                 print(
@@ -1739,6 +1783,8 @@ class VocalMorphTrainer:
                     f"val_short_h_spk={float(short_height_speaker):.2f}cm "
                     f"| val_tall_h_spk={float(tall_height_speaker):.2f}cm "
                     f"| val_edge_h_spk={float(extreme_height_speaker):.2f}cm "
+                    f"| val_bal_h_spk={float(balanced_frontier_speaker):.2f}cm "
+                    f"| val_guard_h_spk={float(guarded_frontier_speaker):.2f}cm "
                     f"| val_qmed_h_spk={float(medium_quality_speaker):.2f}cm",
                     flush=True,
                 )
