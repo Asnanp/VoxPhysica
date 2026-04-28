@@ -140,6 +140,30 @@
 - Both speaker-batching redesigns have now failed, which raises confidence that batching structure is not the main frontier bottleneck.
 - Stage 3c still has a large train-vs-val speaker gap, severe short-height weakness, and unstable validation quality slices, so the representation is still not robust enough for promotion.
 
+## V3.2 Nuclear Redesign (targeting 3cm MAE)
+- Architecture: VocalMorphV3 with major upgrades
+  - Deeper Conformer: 6 blocks (was 4), 384d (was 256d)
+  - Hierarchical multi-resolution pooling: aggregates representations from all encoder layers via learned gating
+  - Multi-token physics cross-attention: 4 physics tokens (was 1) for richer acoustic-physics fusion
+  - 4-block SwiGLU regression tower with MC dropout (was 3 blocks)
+  - Height calibration head: learns bin-specific additive corrections to fix systematic short/tall bias
+  - 4-scale acoustic frontend: kernel sizes 3/7/15/25 (was 3/11/25) with SE attention
+  - 5 height bins (was 3): very_short/short/medium/tall/very_tall
+- Loss: Wing + Huber composite
+  - Wing loss (weight 0.5): log-based loss that is more sensitive to small errors, specifically designed for precise regression
+  - Huber loss (weight 0.5, delta 0.3 down from 0.5): tighter convergence near zero
+  - Stronger ranking loss (0.25 up from 0.2) and isometric loss (0.08 up from 0.05)
+  - Calibration regularization to prevent calibration head from dominating
+- Training: stronger regularization to close the train-val gap
+  - Higher dropout (0.22), stronger drop_path (0.12), weight decay 0.10 (was 0.08)
+  - Stronger augmentation: higher noise/masking probabilities and magnitudes
+  - Longer warmup (8 epochs), slower initial LR (0.005x base), tighter grad clip (0.8)
+  - Higher EMA decay (0.9997) for smoother evaluation
+  - Longer patience (30 epochs) with 120 epoch budget
+  - Effective batch size 120 (24 x 5 accumulation)
+- Target: reduce val speaker MAE to ~3cm, test speaker MAE to ~3-4cm
+- Launch: `python scripts/train_v3.py --config configs/v3_nuclear.yaml`
+
 ## Next Experiments
 - Do not spend more seeds on batching tricks.
 - Replication task for `stage3c_height_only_regularized` is complete.

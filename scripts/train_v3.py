@@ -427,10 +427,13 @@ class V3Trainer:
             lr = self.optimizer.param_groups[0]["lr"]
             rank_loss = train_losses.get('height_ranking', 0)
             iso_loss = train_losses.get('height_iso', 0)
+            wing_loss = train_losses.get('height_wing', 0)
+            calib_loss = train_losses.get('calibration_reg', 0)
             print(
                 f"[Epoch {epoch:3d}/{self.epochs}] "
                 f"loss={train_losses['total']:.4f} "
-                f"rank={rank_loss:.4f} iso={iso_loss:.4f} | "
+                f"wing={wing_loss:.4f} rank={rank_loss:.4f} iso={iso_loss:.4f} "
+                f"calib={calib_loss:.4f} | "
                 f"val_speaker_MAE={val_metrics['height_mae_speaker']:.3f}cm | "
                 f"short={val_metrics.get('height_mae_short_speaker', 0):.3f}cm | "
                 f"tall={val_metrics.get('height_mae_tall_speaker', 0):.3f}cm | "
