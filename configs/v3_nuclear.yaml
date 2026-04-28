@@ -7,9 +7,12 @@
 
 project:
   name: VocalMorph-V3
-  version: "3.1.0"
+  version: "3.2.0"
   author: Asnan P
-  description: Improved V3 with ranking loss, isometric regularization, physics cross-attention, and height-bin auxiliary
+  description: >
+    V3.2 — deeper Conformer, hierarchical pooling, Wing+Huber loss,
+    multi-token physics cross-attention, height calibration head,
+    5-bin structural supervision, stronger regularization.
 
 data:
   features_dir: data/features_audited/
@@ -55,28 +58,32 @@ model:
   name: VocalMorphV3
   input_dim: 136
   v3:
-    # Reduced capacity to prevent overfitting (was 512d/6 blocks)
-    d_model: 256
+    # Deeper/wider Conformer for richer representations
+    d_model: 384
     n_heads: 8
-    n_blocks: 4
+    n_blocks: 6
     ff_expansion: 4
     conv_kernel: 15
-    dropout: 0.20
-    drop_path: 0.08
+    dropout: 0.22
+    drop_path: 0.12
     pool_heads: 4
-    pool_hidden: 128
-    # New V3.1 features
-    n_height_bins: 3
+    pool_hidden: 192
+    # V3.2 features
+    n_height_bins: 5
     use_physics_cross_attn: true
     use_height_bin_aux: true
     use_feature_mixup: true
     mixup_alpha: 0.2
+    use_hierarchical_pooling: true
+    use_height_calibration: true
+    physics_tokens: 4
+    tower_hidden_dim: 320
 
 training:
   seed: 123
-  epochs: 100
-  batch_size: 32
-  gradient_accumulation_steps: 4   # effective batch = 128 (was 16 = 512, too large)
+  epochs: 120
+  batch_size: 24
+  gradient_accumulation_steps: 5   # effective batch = 120
   num_workers: 4
   prefetch_factor: 2
   persistent_workers: true
@@ -92,66 +99,70 @@ training:
   speaker_batching:
     enabled: false
 
-  # Feature augmentation — ENABLED for regularization
+  # Feature augmentation — ENABLED with stronger regularization
   augmentation:
     enabled: true
-    noise_p: 0.50
-    noise_std: 0.015
-    time_mask_p: 0.30
-    time_mask_max_frac: 0.12
-    feat_mask_p: 0.25
-    feat_mask_max_frac: 0.10
-    scale_p: 0.40
-    scale_std: 0.05
-    temporal_jitter_p: 0.25
-    temporal_jitter_max_frac: 0.05
+    noise_p: 0.55
+    noise_std: 0.018
+    time_mask_p: 0.35
+    time_mask_max_frac: 0.15
+    feat_mask_p: 0.30
+    feat_mask_max_frac: 0.12
+    scale_p: 0.45
+    scale_std: 0.06
+    temporal_jitter_p: 0.30
+    temporal_jitter_max_frac: 0.06
 
   # EMA for smoother evaluation
   ema:
     enabled: true
-    decay: 0.999
+    decay: 0.9997
     update_every: 1
-    warmup_steps: 200
+    warmup_steps: 300
     use_for_eval: true
 
   optimizer:
     type: adamw
-    lr: 0.0002
-    weight_decay: 0.08
+    lr: 0.00015
+    weight_decay: 0.10
     betas: [0.9, 0.98]
 
   scheduler:
     type: cosine_annealing
-    T_max: 100
-    eta_min: 0.000001
+    T_max: 120
+    eta_min: 0.0000005
 
   # Multi-objective height-focused loss
   loss:
-    huber_delta: 0.5
-    huber_weight: 1.0
-    ranking_weight: 0.2
+    huber_delta: 0.3
+    huber_weight: 0.5
+    wing_weight: 0.5
+    wing_width: 5.0
+    wing_curvature: 0.5
+    ranking_weight: 0.25
     ranking_margin: 0.15
-    isometric_weight: 0.05
-    height_bin_weight: 0.15
+    isometric_weight: 0.08
+    height_bin_weight: 0.2
     gender_weight: 0.1
     label_smoothing: 0.05
+    calibration_reg_weight: 0.01
 
   # Linear LR warmup
-  lr_warmup_epochs: 5
-  lr_warmup_start_factor: 0.01
+  lr_warmup_epochs: 8
+  lr_warmup_start_factor: 0.005
 
   # Feature smoothing during training
-  feature_smoothing_std: 0.015
+  feature_smoothing_std: 0.018
 
   early_stopping:
     enabled: true
-    patience: 25
+    patience: 30
     monitor: height_mae_speaker
     mode: min
 
   gradient_clipping:
     enabled: true
-    max_norm: 1.0
+    max_norm: 0.8
 
 logging:
   tensorboard:
