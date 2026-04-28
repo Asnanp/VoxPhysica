@@ -425,9 +425,15 @@ class V3Trainer:
             # ── Epoch summary ──
             elapsed = time.time() - epoch_start
             lr = self.optimizer.param_groups[0]["lr"]
+            rank_loss = train_losses.get('height_ranking', 0)
+            iso_loss = train_losses.get('height_iso', 0)
+            wing_loss = train_losses.get('height_wing', 0)
+            calib_loss = train_losses.get('calibration_reg', 0)
             print(
                 f"[Epoch {epoch:3d}/{self.epochs}] "
-                f"loss={train_losses['total']:.4f} | "
+                f"loss={train_losses['total']:.4f} "
+                f"wing={wing_loss:.4f} rank={rank_loss:.4f} iso={iso_loss:.4f} "
+                f"calib={calib_loss:.4f} | "
                 f"val_speaker_MAE={val_metrics['height_mae_speaker']:.3f}cm | "
                 f"short={val_metrics.get('height_mae_short_speaker', 0):.3f}cm | "
                 f"tall={val_metrics.get('height_mae_tall_speaker', 0):.3f}cm | "
@@ -510,10 +516,19 @@ class V3Trainer:
                 features = features + noise
 
             with torch.cuda.amp.autocast(enabled=self.use_amp):
-                preds = self.model(features, padding_mask=padding_mask)
+                preds = self.model(
+                    features,
+                    padding_mask=padding_mask,
+                    height_targets=batch["height"],
+                    gender_targets=batch["gender"],
+                )
+                # Use mixed targets from mixup if available
+                height_target = preds.pop("mixed_height_targets", batch["height"])
+                preds.pop("mixup_lambda", None)
                 targets = {
-                    "height": batch["height"],
+                    "height": height_target,
                     "gender": batch["gender"],
+                    "height_cm": batch.get("height_raw"),
                 }
                 losses = self.criterion(preds, targets)
 
