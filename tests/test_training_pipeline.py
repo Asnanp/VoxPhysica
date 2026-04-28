@@ -34,8 +34,8 @@ class _TinyDataset(Dataset):
         self.target_stats = target_stats
         self.samples = []
         raw_rows = [
-            ("spk_a", 168.0, 62.0, 24.0, 0),
-            ("spk_a", 168.0, 62.0, 24.0, 0),
+            ("spk_a", 158.0, 62.0, 24.0, 0),
+            ("spk_a", 158.0, 62.0, 24.0, 0),
             ("spk_b", 176.0, 74.0, 39.0, 1),
             ("spk_b", 176.0, 74.0, 39.0, 1),
         ]
@@ -145,11 +145,17 @@ def test_v2_trainer_uses_native_loss_and_reports_speaker_metrics(tmp_path):
     assert "height_mae" in val_metrics
     assert "height_mae_speaker" in val_metrics
     assert "height_mae_speaker_omega" in val_metrics
+    assert "height_edge_balance_gap_speaker_mae" in val_metrics
+    assert "height_balanced_frontier_speaker_mae" in val_metrics
+    assert "height_edge_guarded_frontier_speaker_mae" in val_metrics
     assert "height_calibration_mae" in val_metrics
     assert "height_interval_68" in val_metrics
     assert torch.isfinite(torch.tensor(val_metrics["total"]))
     assert torch.isfinite(torch.tensor(val_metrics["height_mae_speaker"]))
     assert torch.isfinite(torch.tensor(val_metrics["height_mae_speaker_omega"]))
+    assert torch.isfinite(torch.tensor(val_metrics["height_edge_balance_gap_speaker_mae"]))
+    assert torch.isfinite(torch.tensor(val_metrics["height_balanced_frontier_speaker_mae"]))
+    assert torch.isfinite(torch.tensor(val_metrics["height_edge_guarded_frontier_speaker_mae"]))
     assert torch.isfinite(torch.tensor(val_metrics["height_calibration_mae"]))
     trainer.close()
 
