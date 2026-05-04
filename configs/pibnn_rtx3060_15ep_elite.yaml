@@ -1,0 +1,271 @@
+project:
+  name: VocalMorph
+  version: "2.2.0-15ep-elite"
+  author: Asnan P
+  description: ECAPA-TDNN multi-task voice-to-biometric prediction - RTX 3060 15-Epoch Elite Edition
+
+data:
+  nisp_dir: data/nisp/
+  raw_dir: data/raw/
+  processed_dir: data/processed/
+  features_dir: data/features_audited/
+  augmented_dir: data/augmented/
+
+  targets:
+    - height_cm
+    - weight_kg
+    - age
+    - gender
+
+  sample_rate: 16000
+  max_audio_duration: 10
+  min_audio_duration: 2
+
+  split:
+    train: 0.70
+    val: 0.15
+    test: 0.15
+    stratify_by: gender
+    random_seed: 42
+    
+  split_manifests:
+    train: data/splits/train_clean.csv
+    val: data/splits/val_clean.csv
+    test: data/splits/test_clean.csv
+
+features:
+  mfcc:
+    n_mfcc: 40
+    n_fft: 512
+    hop_length: 160
+    win_length: 400
+    include_delta: true
+    include_delta_delta: true
+
+  formants:
+    n_formants: 4
+    max_formant: 5500
+    window_length: 0.025
+
+  pitch:
+    method: "praat"
+    min_pitch: 50
+    max_pitch: 500
+
+  spectral:
+    centroid: true
+    rolloff: true
+    flux: true
+    bandwidth: true
+    contrast: true
+
+  vtl:
+    estimate: true
+    speed_of_sound: 34000
+
+  voice_quality:
+    jitter: true
+    shimmer: true
+    hnr: true
+
+model:
+  name: VocalMorphV2
+  type: dual_path_ecapa_conformer_monotonic
+
+  v2:
+    ecapa_channels: 512
+    ecapa_scale: 8
+    ecapa_embedding_dim: 192
+
+    conformer_d_model: 256
+    conformer_heads: 8
+    conformer_blocks: 4
+
+    dropout: 0.2
+
+  gradient_checkpointing: true
+  memory_efficient_attention: true
+
+physics:
+  enabled: true
+
+  vtl_height_constraint:
+    enabled: true
+    ratio: 6.7
+    penalty_weight: 0.25
+
+  formant_vtl_constraint:
+    enabled: true
+    speed_of_sound: 34000
+    penalty_weight: 0.20
+
+  f0_gender_constraint:
+    enabled: true
+    male_f0_range: [85, 180]
+    female_f0_range: [165, 265]
+    penalty_weight: 0.12
+
+training:
+  seed: 42
+  epochs: 15
+  batch_size: 48
+  gradient_accumulation_steps: 1
+  num_workers: 6
+  persistent_workers: true
+  prefetch_factor: 6
+  device: cuda
+  mixed_precision: true
+  allow_tf32: true
+  max_feature_frames: 960
+  train_crop_mode: random
+  eval_crop_mode: center
+  
+  # GPU memory optimizations
+  pin_memory: true
+  non_blocking: true
+  empty_cache_frequency: 3
+  
+  # Elite training techniques
+  gradient_checkpointing: true
+  use_channels_last: false
+  
+  ema:
+    enabled: true
+    decay: 0.9995
+    update_every: 1
+    warmup_steps: 500
+    use_for_eval: true
+
+  optimizer:
+    type: adamw
+    lr: 0.001
+    weight_decay: 0.001
+    betas: [0.9, 0.999]
+    eps: 1e-8
+
+  scheduler:
+    type: one_cycle_lr
+    max_lr: 0.001
+    total_steps: 15
+    pct_start: 0.3
+    anneal_strategy: cos
+    div_factor: 25
+    final_div_factor: 1000
+    
+  # Aggressive learning rate warmup
+  lr_warmup_epochs: 2
+  lr_warmup_start_factor: 0.05
+
+  loss:
+    type: vtsl_v2
+
+    task_weights:
+      height: 8.0
+      weight: 1.0
+      age: 1.0
+      gender: 0.5
+      vtsl: 0.5
+      physics_penalty: 0.25
+      domain_adv: 0.1
+
+    use_gender_class_weights: true
+    physics_penalty_weight: 0.25
+    
+    # Elite loss enhancements for rapid convergence
+    label_smoothing: 0.05
+    focal_gamma: 3.0
+    focal_after_epoch: 5
+
+  early_stopping:
+    enabled: false
+    patience: 3
+    monitor: height_mae_speaker
+    mode: min
+    min_delta: 0.05
+
+  gradient_clipping:
+    enabled: true
+    max_norm: 0.3
+    
+  # Ultra-aggressive augmentation for 15-epoch convergence
+  augmentation:
+    enabled: true
+    noise_p: 0.75
+    noise_std: 0.05
+    time_mask_p: 0.65
+    time_mask_max_frac: 0.20
+    feat_mask_p: 0.55
+    feat_mask_max_frac: 0.15
+    scale_p: 0.55
+    scale_std: 0.15
+    temporal_jitter_p: 0.45
+    temporal_jitter_max_frac: 0.12
+    freq_mask_p: 0.50
+    freq_mask_max_frac: 0.25
+    mixup_p: 0.35
+    mixup_alpha: 0.35
+
+  # Stochastic Weight Averaging for rapid convergence
+  swa:
+    enabled: true
+    start_frac: 0.60
+    anneal_epochs: 6
+    use_for_eval: true
+
+evaluation:
+  targets:
+    height_mae_cm: 3.6
+    weight_mae_kg: 5.0
+    age_mae_years: 5.0
+    gender_accuracy: 0.95
+  inference:
+    use_ensemble: true
+    deterministic: true
+    n_samples: 12
+    n_crops: 7
+    crop_size: 256
+
+logging:
+  wandb:
+    enabled: false
+    project: VocalMorph
+    entity: asnanp
+
+  tensorboard:
+    enabled: false
+    log_dir: outputs/logs_rtx3060_15ep_elite/
+
+  checkpoint:
+    dir: outputs/checkpoints_rtx3060_15ep_elite/
+    save_top_k: 3
+    monitor: height_mae_speaker
+    mode: min
+
+inference:
+  checkpoint: outputs/checkpoints_rtx3060_15ep_elite/best.ckpt
+  mc_samples: 150
+  deterministic_ensemble: true
+  n_crops: 10
+  crop_size: 256
+  output_uncertainty: true
+  output_dir: outputs/predictions_rtx3060_15ep_elite/
+  quality_gate:
+    enabled: true
+    strict: true
+    min_capture_quality_score: 0.65
+    min_speech_ratio: 0.65
+    min_snr_db: 15.0
+    max_distance_cm: 30.0
+    max_clipped_ratio: 0.015
+    require_quality_ok: false
+    min_accepted_clips: 4
+  audio_enhancement:
+    enabled: true
+    vad_aggressiveness: 2
+    spectral_gate_strength: 1.6
+    spectral_gate_floor: 0.06
+    trim_db: 32.0
+    min_speech_ratio: 0.55
+    min_snr_db: 12.0
+    max_clipped_ratio: 0.01
+    max_distance_cm: 35.0

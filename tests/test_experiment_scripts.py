@@ -1,0 +1,123 @@
+from pathlib import Path
+
+import numpy as np
+
+from scripts.audit_speaker_leakage import speaker_leakage_report
+from scripts.run_omega_ladder import OMEGA_STAGES
+from scripts.run_v2_ablations import build_ablation_config, summarize_metrics
+
+
+def _write_feature(path: Path, speaker_id: str):
+    np.savez(path, sequence=np.zeros((4, 8), dtype=np.float32), speaker_id=np.array(speaker_id, dtype=object))
+
+
+def test_speaker_leakage_report_detects_overlap(tmp_path):
+    feature_root = tmp_path / "features"
+    for split in ("train", "val", "test"):
+        (feature_root / split).mkdir(parents=True)
+
+    _write_feature(feature_root / "train" / "a_001.npz", "spk_a")
+    _write_feature(feature_root / "val" / "b_001.npz", "spk_b")
+    _write_feature(feature_root / "test" / "a_999.npz", "spk_a")
+
+    report = speaker_leakage_report(str(feature_root))
+    assert report["has_leakage"] is True
+    assert report["overlap_counts"]["train_test"] == 1
+
+
+def test_build_ablation_config_targets_speaker_metric(tmp_path):
+    base_config = {
+        "training": {"epochs": 5},
+        "logging": {"tensorboard": {}, "checkpoint": {}},
+        "model": {"v2": {"toggles": {"use_cross_attention": True}}},
+    }
+    run_dir = tmp_path / "baseline" / "seed_11"
+    config = build_ablation_config(
+        base_config,
+        {"model.v2.toggles.use_cross_attention": False},
+        run_dir=str(run_dir),
+        seed=11,
+    )
+    assert config["training"]["seed"] == 11
+    assert config["training"]["early_stopping"]["monitor"] == "height_mae_speaker"
+    assert config["logging"]["checkpoint"]["monitor"] == "height_mae_speaker"
+    assert config["model"]["v2"]["toggles"]["use_cross_attention"] is False
+
+
+def test_summarize_metrics_reports_mean_and_std():
+    records = [
+        {
+            "ablation": "baseline",
+            "final_val": {"height_mae_speaker": 2.4, "height_calibration_mae": 0.8, "height_uncertainty_error_corr": 0.5},
+            "final_test": {"height_mae_speaker": 2.6},
+        },
+        {
+            "ablation": "baseline",
+            "final_val": {"height_mae_speaker": 2.8, "height_calibration_mae": 0.9, "height_uncertainty_error_corr": 0.4},
+            "final_test": {"height_mae_speaker": 2.7},
+        },
+    ]
+    summary = summarize_metrics(records)
+    baseline = summary["baseline"]
+    assert baseline["n_runs"] == 2.0
+    assert baseline["final_val_height_mae_speaker_mean"] == 2.6
+    assert baseline["final_test_height_mae_speaker_mean"] == 2.65
+
+
+def test_omega_stage3d_stable_preserves_stage3d_with_monotonic_cosine():
+    stage = OMEGA_STAGES["stage3d_height_only_slice_aligned_stable"]
+    overrides = stage["overrides"]
+    base = OMEGA_STAGES["stage3d_height_only_slice_aligned"]["overrides"]
+
+    assert stage["monitor"] == "height_mae_speaker"
+    # Scheduler is the single intended change: monotonic cosine, no restarts.
+    assert overrides["training.scheduler.type"] == "cosine_annealing"
+    assert overrides["training.scheduler.T_max"] == 10
+    assert overrides["training.scheduler.eta_min"] == 1.0e-05
+
+    # Every Stage 3d component that is not the scheduler must be preserved.
+    preserved_keys = [
+        "training.speaker_batching.enabled",
+        "training.speaker_batching.mode",
+        "training.speaker_batching.speakers_per_batch",
+        "training.speaker_batching.clips_per_speaker",
+        "training.speaker_batching.height_bin_weights.short",
+        "training.speaker_alignment.enable_pooled_height",
+        "training.speaker_alignment.enable_consistency",
+        "training.speaker_alignment.enable_ranking",
+        "training.speaker_alignment.pooling_method",
+        "training.speaker_alignment.consistency_mode",
+        "training.speaker_alignment.pooled_height_weight_max",
+        "training.speaker_alignment.consistency_weight_max",
+        "training.speaker_alignment.ranking_weight_max",
+        "training.speaker_alignment.height_bin_loss_weight_short",
+        "training.feature_smoothing_std",
+        "training.lr_warmup_epochs",
+        "training.lr_warmup_start_factor",
+        "training.optimizer.lr",
+        "training.optimizer.weight_decay",
+    ]
+    for key in preserved_keys:
+        assert overrides[key] == base[key], f"Stage 3d-stable changed {key}"
+
+
+def test_omega_stage3e_is_registered_with_stable_scheduler():
+    stage = OMEGA_STAGES["stage3e_height_only_stable_bin_weighted"]
+    overrides = stage["overrides"]
+    assert stage["monitor"] == "height_mae_speaker"
+    assert overrides["training.speaker_batching.enabled"] is False
+    assert overrides["training.scheduler.type"] == "cosine_annealing"
+    assert overrides["training.scheduler.T_max"] == 10
+    assert overrides["training.speaker_alignment.enable_pooled_height"] is False
+    assert overrides["training.speaker_alignment.height_bin_loss_weight_short"] == 1.25
+
+
+def test_omega_stage3f_is_registered_as_stage3c_style_long_run():
+    stage = OMEGA_STAGES["stage3f_height_only_long_stable"]
+    overrides = stage["overrides"]
+    assert stage["monitor"] == "height_mae_speaker"
+    assert overrides["training.speaker_batching.enabled"] is False
+    assert overrides["training.scheduler.type"] == "cosine_annealing"
+    assert overrides["training.scheduler.T_max"] == 50
+    assert overrides["training.loss.task_weights.height"] == 4.0
+    assert overrides["training.speaker_alignment.enable_pooled_height"] is False
