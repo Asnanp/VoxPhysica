@@ -368,6 +368,7 @@ class VocalMorphV2(nn.Module):
             hidden_dim=96,
             dropout=self.hyperparameters.branch_dropout,
             constants=self.constants,
+            n_domains=self.domain_classes,
         )
 
         self.grl = GradientReversalLayer(lambda_init=0.0)

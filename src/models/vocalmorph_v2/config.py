@@ -197,7 +197,7 @@ class ModelHyperparameters:
     physics_gate_curriculum_epochs: int = 30
     uncertainty_samples: int = 10
     uncertainty_crops: int = 1
-    domain_classes: int = 2
+    domain_classes: int = 3
     gender_classes: int = 2
 
     @property

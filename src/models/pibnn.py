@@ -353,6 +353,14 @@ def build_model(config: dict) -> nn.Module:
         cfg["model"]["input_dim"] = input_dim
         return build_vocalmorph_v2(cfg)
 
+    if "vocalmorphv5" in model_name or "vocalmorph_v5" in model_name:
+        from src.models.vocalmorph_v5 import build_v5_model
+
+        cfg = dict(config)
+        cfg.setdefault("model", {})
+        cfg["model"]["input_dim"] = input_dim
+        return build_v5_model(cfg)
+
     if "ecapa" in model_name:
         from src.models.ecapa import ECAPAMultiTask
 

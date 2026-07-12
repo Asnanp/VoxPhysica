@@ -69,8 +69,8 @@ PUSH_OVERRIDES: Dict[str, Any] = {
     "training.amp": True,
     "training.mixed_precision": True,
     "training.allow_tf32": True,
-    "training.num_workers": 2,
-    "training.persistent_workers": True,
+    "training.num_workers": 0,
+    "training.persistent_workers": False,
     "training.epochs": 80,
     "training.optimizer.lr": 0.00005,
     "training.optimizer.weight_decay": 0.03,
@@ -121,6 +121,7 @@ PUSH_OVERRIDES: Dict[str, Any] = {
     "training.early_stopping.mode": "min",
     "logging.checkpoint.monitor": "height_mae_speaker",
     "logging.checkpoint.mode": "min",
+    "training.train_eval_frequency": 0,
 }
 
 

@@ -116,6 +116,7 @@ def main() -> int:
         "--metrics-out",
         metrics_json,
     ]
+    env = {**os.environ, "PYTHONUNBUFFERED": "1"}
     proc = subprocess.Popen(
         train_cmd,
         cwd=ROOT,
@@ -124,6 +125,7 @@ def main() -> int:
         stderr=stderr_handle,
         creationflags=_creation_flags(),
         close_fds=True,
+        env=env,
     )
     stdout_handle.close()
     stderr_handle.close()

@@ -161,6 +161,7 @@ class TeeStream:
             except OSError:
                 self.primary_broken = True
         self.secondary.write(data)
+        self.secondary.flush()
         return len(data)
 
     def flush(self):

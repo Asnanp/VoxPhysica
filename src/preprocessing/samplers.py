@@ -166,6 +166,7 @@ class BalancedHeightAwareSpeakerBatchSampler(Sampler[List[int]]):
         clips_per_speaker: int,
         height_bin_weights: Optional[Mapping[str, float]] = None,
         gender_height_weights: Optional[Mapping[str, float]] = None,
+        source_weights: Optional[Mapping[str, float]] = None,
         max_speaker_weight: float = 4.0,
         total_examples: Optional[int] = None,
         balance_gender: bool = True,
@@ -210,12 +211,17 @@ class BalancedHeightAwareSpeakerBatchSampler(Sampler[List[int]]):
             str(key).strip().lower(): float(value)
             for key, value in dict(gender_height_weights or {}).items()
         }
+        self.source_weights = {
+            str(key).strip().upper(): float(value)
+            for key, value in dict(source_weights or {}).items()
+        }
         self.max_speaker_weight = max(1.0, float(max_speaker_weight))
         self.balance_gender = bool(balance_gender)
         self.gender_balance_strength = max(0.0, float(gender_balance_strength))
 
         self.speaker_height_bin: Dict[str, str] = {}
         self.speaker_gender: Dict[str, Optional[int]] = {}
+        self.speaker_source: Dict[str, str] = {}
         gender_counts = {0: 0, 1: 0}
         for speaker_id in self.speaker_ids:
             meta = dict(speaker_metadata.get(speaker_id, {}))
@@ -232,6 +238,11 @@ class BalancedHeightAwareSpeakerBatchSampler(Sampler[List[int]]):
             self.speaker_gender[speaker_id] = gender_int
             if gender_int in gender_counts:
                 gender_counts[gender_int] += 1
+            source = str(meta.get("source", "") or "").strip().upper()
+            if not source:
+                source_id = meta.get("source_id")
+                source = {0: "TIMIT", 1: "NISP", 2: "CELEB"}.get(source_id, "NISP")
+            self.speaker_source[speaker_id] = source
 
         total_gender = float(sum(gender_counts.values()))
         self.gender_prior_weight: Dict[Optional[int], float] = {None: 1.0}
@@ -259,6 +270,7 @@ class BalancedHeightAwareSpeakerBatchSampler(Sampler[List[int]]):
             "total_examples": int(self.total_examples),
             "height_bin_weights": dict(self.height_bin_weights),
             "gender_height_weights": dict(self.gender_height_weights),
+            "source_weights": dict(self.source_weights),
             "max_speaker_weight": float(self.max_speaker_weight),
             "balance_gender": bool(self.balance_gender),
             "gender_balance_strength": float(self.gender_balance_strength),
@@ -299,6 +311,8 @@ class BalancedHeightAwareSpeakerBatchSampler(Sampler[List[int]]):
         height_weight = self.height_bin_weights.get(height_bin, 1.0)
         gender = self.speaker_gender.get(speaker_id)
         weight = height_weight * self.gender_prior_weight.get(gender, 1.0)
+        source = self.speaker_source.get(speaker_id, "NISP")
+        weight *= self.source_weights.get(source, 1.0)
         if gender in (0, 1):
             gender_name = "male" if gender == 1 else "female"
             weight *= self.gender_height_weights.get(

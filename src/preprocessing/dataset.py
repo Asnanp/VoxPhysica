@@ -79,10 +79,27 @@ class FeatureAugmenter:
 
     Operates on numpy arrays of shape (T, D). Designed to be safe for
     anthropometric prediction — avoids destroying formant/f0 structure.
+    Supports curriculum decay: augmentation strength decays with epoch.
     """
 
-    def __init__(self, config: Optional[FeatureAugmentConfig] = None):
+    def __init__(self, config: Optional[FeatureAugmentConfig] = None, current_epoch: int = 0, total_epochs: int = 100):
         self.cfg = config or FeatureAugmentConfig()
+        self.total_epochs = max(1, int(total_epochs))
+        # Curriculum: decay augmentation strength over training
+        # Linear ramp from full strength at epoch 0 to 30% at final epoch
+        epoch_progress = min(1.0, max(0.0, current_epoch / max(1, total_epochs - 1)))
+        self.strength = 1.0 - 0.70 * epoch_progress  # decays from 1.0 to 0.30
+        if self.strength < 0.5:
+            # Reduce mixup more aggressively in late training
+            self.mixup_strength = self.strength * 0.5
+        else:
+            self.mixup_strength = self.strength
+
+    def set_epoch(self, epoch: int) -> None:
+        """Update curriculum strength based on current training epoch."""
+        epoch_progress = min(1.0, max(0.0, epoch / max(1, self.total_epochs - 1)))
+        self.strength = 1.0 - 0.70 * epoch_progress
+        self.mixup_strength = self.strength * 0.5 if self.strength < 0.5 else self.strength
 
     def __call__(self, seq: np.ndarray) -> np.ndarray:
         """Apply random augmentations to a feature sequence (T, D)."""
@@ -91,43 +108,44 @@ class FeatureAugmenter:
 
         out = seq.copy()
 
-        # Gaussian noise
-        if np.random.random() < self.cfg.noise_p:
-            noise = np.random.normal(0.0, self.cfg.noise_std, out.shape).astype(
+        # Gaussian noise (intensity scaled by curriculum)
+        if np.random.random() < self.cfg.noise_p * self.strength:
+            noise_std = self.cfg.noise_std * (0.5 + 0.5 * self.strength)
+            noise = np.random.normal(0.0, noise_std, out.shape).astype(
                 np.float32
             )
             out = out + noise
 
         # Time masking
-        if np.random.random() < self.cfg.time_mask_p and out.shape[0] > 4:
-            max_len = max(1, int(out.shape[0] * self.cfg.time_mask_max_frac))
+        if np.random.random() < self.cfg.time_mask_p * self.strength and out.shape[0] > 4:
+            max_len = max(1, int(out.shape[0] * self.cfg.time_mask_max_frac * self.strength))
             mask_len = np.random.randint(1, max_len + 1)
             start = np.random.randint(0, out.shape[0] - mask_len + 1)
             out[start : start + mask_len] = 0.0
 
         # Feature dimension masking
-        if np.random.random() < self.cfg.feat_mask_p and out.shape[1] > 10:
-            max_dims = max(1, int(out.shape[1] * self.cfg.feat_mask_max_frac))
+        if np.random.random() < self.cfg.feat_mask_p * self.strength and out.shape[1] > 10:
+            max_dims = max(1, int(out.shape[1] * self.cfg.feat_mask_max_frac * self.strength))
             n_dims = np.random.randint(1, max_dims + 1)
             dims = np.random.choice(out.shape[1], n_dims, replace=False)
             out[:, dims] = 0.0
 
-        # Frequency masking (SpecAugment-style - elite level)
-        if np.random.random() < self.cfg.freq_mask_p and out.shape[1] > 10:
-            max_dims = max(1, int(out.shape[1] * self.cfg.freq_mask_max_frac))
+        # Frequency masking (SpecAugment-style)
+        if np.random.random() < self.cfg.freq_mask_p * self.strength and out.shape[1] > 10:
+            max_dims = max(1, int(out.shape[1] * self.cfg.freq_mask_max_frac * self.strength))
             n_dims = np.random.randint(1, max_dims + 1)
             dims = np.random.choice(out.shape[1], n_dims, replace=False)
             out[:, dims] = 0.0
 
         # Feature scaling
-        if np.random.random() < self.cfg.scale_p:
-            scale = 1.0 + np.random.normal(0.0, self.cfg.scale_std)
+        if np.random.random() < self.cfg.scale_p * self.strength:
+            scale = 1.0 + np.random.normal(0.0, self.cfg.scale_std * self.strength)
             scale = np.clip(scale, 0.85, 1.15).astype(np.float32)
             out = out * scale
 
         # Temporal jitter (drop random frames)
-        if np.random.random() < self.cfg.temporal_jitter_p and out.shape[0] > 8:
-            max_drop = max(1, int(out.shape[0] * self.cfg.temporal_jitter_max_frac))
+        if np.random.random() < self.cfg.temporal_jitter_p * self.mixup_strength and out.shape[0] > 8:
+            max_drop = max(1, int(out.shape[0] * self.cfg.temporal_jitter_max_frac * self.strength))
             n_drop = np.random.randint(1, max_drop + 1)
             drop_idx = np.random.choice(out.shape[0], n_drop, replace=False)
             keep_idx = np.setdiff1d(np.arange(out.shape[0]), drop_idx)
@@ -163,7 +181,9 @@ class VocalMorphDataset(Dataset):
                 f"crop_mode must be one of ['head', 'center', 'random'], got {crop_mode!r}"
             )
         self.augment = augment
-        self.augmenter = FeatureAugmenter(augment_config) if augment else None
+        self._total_aug_epochs = getattr(augment_config, 'total_epochs', 100) if augment_config else 100
+        self._current_epoch = 0
+        self.augmenter = FeatureAugmenter(augment_config, current_epoch=0, total_epochs=self._total_aug_epochs) if augment else None
 
         self.file_paths = sorted(glob.glob(os.path.join(features_dir, "*.npz")))
         if len(self.file_paths) == 0:
@@ -413,10 +433,13 @@ class VocalMorphDataset(Dataset):
                         gender_value = int(gender_value)
                     except Exception:
                         gender_value = None
+                source = self._infer_source(data, speaker_id=str(speaker_id), file_path=path)
                 metadata[str(speaker_id)] = {
                     "height_cm": height_raw,
                     "height_bin": height_bin(height_raw) if np.isfinite(height_raw) else "medium",
                     "gender": gender_value if gender_value in (0, 1) else None,
+                    "source": source,
+                    "source_id": int(SOURCE_ID_MAP.get(source, 1)),
                 }
             self._speaker_metadata = metadata
         return self._speaker_metadata
@@ -569,6 +592,10 @@ def build_dataloaders_from_dirs(
     test_dir: str,
     batch_size: int = 32,
     num_workers: int = 4,
+    eval_batch_size: Optional[int] = None,
+    eval_num_workers: Optional[int] = None,
+    eval_prefetch_factor: Optional[int] = None,
+    eval_pin_memory: Optional[bool] = None,
     target_stats: Optional[Dict] = None,
     max_len: Optional[int] = None,
     train_crop_mode: str = "head",
@@ -598,15 +625,35 @@ def build_dataloaders_from_dirs(
         test_dir, max_len=max_len, target_stats=target_stats, crop_mode=eval_crop_mode
     )
 
-    pin = pin_memory and torch.cuda.is_available()
-    loader_kwargs = {}
-    if num_workers > 0:
-        loader_kwargs["persistent_workers"] = bool(
-            num_workers > 0 if persistent_workers is None else persistent_workers
-        )
-        if prefetch_factor is not None:
-            loader_kwargs["prefetch_factor"] = int(prefetch_factor)
-    loader_kwargs["worker_init_fn"] = build_worker_init_fn(int(base_seed))
+    train_pin = pin_memory and torch.cuda.is_available()
+    eval_pin = (
+        train_pin
+        if eval_pin_memory is None
+        else bool(eval_pin_memory) and torch.cuda.is_available()
+    )
+    eval_batch = int(eval_batch_size) if eval_batch_size is not None else int(batch_size)
+    eval_workers = int(eval_num_workers) if eval_num_workers is not None else int(num_workers)
+    eval_prefetch = prefetch_factor if eval_prefetch_factor is None else eval_prefetch_factor
+
+    def _loader_kwargs(worker_count: int, prefetch: Optional[int], seed_offset: int) -> Dict[str, Any]:
+        kwargs: Dict[str, Any] = {
+            "worker_init_fn": build_worker_init_fn(int(base_seed) + int(seed_offset))
+        }
+        if worker_count > 0:
+            kwargs["persistent_workers"] = bool(
+                worker_count > 0 if persistent_workers is None else persistent_workers
+            )
+            if prefetch is not None:
+                kwargs["prefetch_factor"] = int(prefetch)
+        return kwargs
+
+    train_loader_kwargs = _loader_kwargs(int(num_workers), prefetch_factor, 0)
+    eval_loader_kwargs = _loader_kwargs(eval_workers, eval_prefetch, 1000)
+    print(
+        "[VocalMorph Dataset] Loader settings: "
+        f"train_batch={batch_size} train_workers={num_workers} train_pin={train_pin} | "
+        f"eval_batch={eval_batch} eval_workers={eval_workers} eval_pin={eval_pin}"
+    )
 
     speaker_batching = dict(speaker_batching or {})
     speaker_batching_enabled = bool(speaker_batching.get("enabled", False))
@@ -636,6 +683,7 @@ def build_dataloaders_from_dirs(
                 clips_per_speaker=clips_per_speaker,
                 height_bin_weights=speaker_batching.get("height_bin_weights"),
                 gender_height_weights=speaker_batching.get("gender_height_weights"),
+                source_weights=speaker_batching.get("source_weights"),
                 max_speaker_weight=float(
                     speaker_batching.get("max_speaker_weight", 4.0)
                 ),
@@ -670,8 +718,8 @@ def build_dataloaders_from_dirs(
             sampler=weighted_sampler,
             num_workers=num_workers,
             collate_fn=collate_fn,
-            pin_memory=pin,
-            **loader_kwargs,
+            pin_memory=train_pin,
+            **train_loader_kwargs,
         )
     else:
         train_loader = DataLoader(
@@ -679,26 +727,26 @@ def build_dataloaders_from_dirs(
             batch_sampler=train_batch_sampler,
             num_workers=num_workers,
             collate_fn=collate_fn,
-            pin_memory=pin,
-            **loader_kwargs,
+            pin_memory=train_pin,
+            **train_loader_kwargs,
         )
     val_loader = DataLoader(
         val_ds,
-        batch_size=batch_size,
+        batch_size=eval_batch,
         shuffle=False,
-        num_workers=num_workers,
+        num_workers=eval_workers,
         collate_fn=collate_fn,
-        pin_memory=pin,
-        **loader_kwargs,
+        pin_memory=eval_pin,
+        **eval_loader_kwargs,
     )
     test_loader = DataLoader(
         test_ds,
-        batch_size=batch_size,
+        batch_size=eval_batch,
         shuffle=False,
-        num_workers=num_workers,
+        num_workers=eval_workers,
         collate_fn=collate_fn,
-        pin_memory=pin,
-        **loader_kwargs,
+        pin_memory=eval_pin,
+        **eval_loader_kwargs,
     )
 
     return train_loader, val_loader, test_loader

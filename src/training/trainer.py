@@ -290,6 +290,11 @@ class VocalMorphTrainer:
 
         train_cfg = config.get("training", {})
         self.epochs = int(train_cfg.get("epochs", 100))
+        max_hours = train_cfg.get("max_hours")
+        self.max_training_seconds = (
+            float(max_hours) * 3600.0 if max_hours is not None and float(max_hours) > 0 else None
+        )
+        self.training_started_at: Optional[float] = None
         self.device = self._resolve_device(train_cfg.get("device", "auto"))
         self.use_amp = (
             train_cfg.get("mixed_precision", True) and self.device.type == "cuda"
@@ -409,6 +414,26 @@ class VocalMorphTrainer:
             0, int(es_cfg.get("degradation_patience", 0))
         )
         self.es_degradation_counter = 0
+        # Gap-aware early stopping: track train-val gap growth
+        self.es_gap_threshold = float(es_cfg.get("gap_threshold", 3.5))
+        self.es_gap_patience = max(0, int(es_cfg.get("gap_patience", 5)))
+        self.es_gap_counter = 0
+        self.last_epoch_gap: Optional[float] = None
+
+        target_stop_cfg = train_cfg.get("target_stopping", {})
+        eval_targets = config.get("evaluation", {}).get("targets", {})
+        target_value = target_stop_cfg.get(
+            "value", eval_targets.get("height_mae_cm")
+        )
+        self.target_stop_enabled = bool(target_stop_cfg.get("enabled", False))
+        self.target_stop_monitor = self._normalize_monitor_key(
+            target_stop_cfg.get("monitor", "height_mae")
+        )
+        self.target_stop_mode = str(target_stop_cfg.get("mode", "min")).lower()
+        self.target_stop_value = (
+            float(target_value) if target_value is not None else None
+        )
+        self.target_stop_only = bool(target_stop_cfg.get("stop_only", False))
 
         log_cfg = config.get("logging", {})
         tb_enabled = log_cfg.get("tensorboard", {}).get("enabled", False)
@@ -496,6 +521,13 @@ class VocalMorphTrainer:
             )
         print(f"[Trainer] Scheduler: {self.scheduler_type}")
         print(f"[Trainer] Early stop monitor: {self.es_monitor} ({self.es_mode})")
+        if self.target_stop_enabled and self.target_stop_value is not None:
+            comparator = "<=" if self.target_stop_mode == "min" else ">="
+            print(
+                f"[Trainer] Target stop: {self.target_stop_monitor} "
+                f"{comparator} {self.target_stop_value:.4f} "
+                f"| stop_only={self.target_stop_only}"
+            )
         print(f"[Trainer] Checkpoint monitor: {self.ckpt_monitor} ({self.ckpt_mode})")
         print(
             f"[Trainer] EMA: {self.use_ema} | decay={self.ema_decay} | eval={self.ema_use_for_eval}"
@@ -970,6 +1002,10 @@ class VocalMorphTrainer:
         sampler = self._train_sampler()
         if sampler is not None and hasattr(sampler, "set_epoch"):
             sampler.set_epoch(int(epoch))
+        # Update curriculum augmentation strength on dataset
+        ds = getattr(self.train_loader, "dataset", None)
+        if ds is not None and hasattr(ds, "augmenter") and ds.augmenter is not None:
+            ds.augmenter.set_epoch(int(epoch))
 
     def _sampler_state(self) -> Optional[Dict[str, Any]]:
         sampler = self._train_sampler()
@@ -1168,6 +1204,31 @@ class VocalMorphTrainer:
         if isinstance(fallback, (int, float)) and math.isfinite(float(fallback)):
             return float(fallback)
         return float("inf") if mode == "min" else float("-inf")
+
+    def _target_stop_status(self, metrics: Dict[str, float]) -> Dict[str, Any]:
+        status: Dict[str, Any] = {
+            "enabled": bool(
+                self.target_stop_enabled and self.target_stop_value is not None
+            ),
+            "monitor": self.target_stop_monitor,
+            "target": self.target_stop_value,
+            "value": float("nan"),
+            "reached": False,
+        }
+        if not status["enabled"]:
+            return status
+
+        current = self._metric_value(
+            metrics, self.target_stop_monitor, self.target_stop_mode
+        )
+        status["value"] = float(current)
+        if not math.isfinite(float(current)):
+            return status
+        if self.target_stop_mode == "max":
+            status["reached"] = float(current) >= float(self.target_stop_value)
+        else:
+            status["reached"] = float(current) <= float(self.target_stop_value)
+        return status
 
     def _denorm_numpy(self, values: np.ndarray, key: str) -> np.ndarray:
         if self.target_stats is None:
@@ -1700,8 +1761,11 @@ class VocalMorphTrainer:
     def train(self):
         print(f"\n{'=' * 60}")
         print(f"  VocalMorph Training - {self.epochs} epochs")
+        if self.max_training_seconds is not None:
+            print(f"  Time limit: {self.max_training_seconds / 3600.0:.1f} hours")
         print(f"{'=' * 60}\n")
 
+        self.training_started_at = time.time()
         for epoch in range(self.start_epoch, self.epochs + 1):
             t0 = time.time()
             train_losses = self._train_epoch(epoch)
@@ -1778,6 +1842,7 @@ class VocalMorphTrainer:
                     train_eval_metrics.get("height_mae_speaker", float("nan"))
                 )
 
+            target_status = self._target_stop_status(val_metrics)
             monitored = self._metric_value(val_metrics, self.es_monitor, self.es_mode)
             improved = (
                 monitored < (self.best_val_metric - self.es_min_delta)
@@ -1826,6 +1891,17 @@ class VocalMorphTrainer:
                 "improved": bool(improved),
                 "es_counter": int(self.es_counter),
                 "es_degradation_counter": int(self.es_degradation_counter),
+                "target_stop": {
+                    "enabled": bool(target_status["enabled"]),
+                    "monitor": str(target_status["monitor"]),
+                    "target": (
+                        float(target_status["target"])
+                        if target_status["target"] is not None
+                        else None
+                    ),
+                    "value": float(target_status["value"]),
+                    "reached": bool(target_status["reached"]),
+                },
             }
             if train_eval_metrics:
                 epoch_record["gap_height_mae_speaker_val_minus_train"] = float(gap)
@@ -1858,6 +1934,13 @@ class VocalMorphTrainer:
                     f"              train_eval_h_spk={train_eval_metrics.get('height_mae_speaker', float('nan')):.2f}cm "
                     f"| gap={gap:.2f}cm"
                 )
+            if target_status["enabled"]:
+                print(
+                    f"              target {target_status['monitor']}="
+                    f"{float(target_status['value']):.2f}cm / "
+                    f"{float(target_status['target']):.2f}cm "
+                    f"| reached={bool(target_status['reached'])}"
+                )
 
             ckpt_metric = self._metric_value(
                 val_metrics, self.ckpt_monitor, self.ckpt_mode
@@ -1868,12 +1951,25 @@ class VocalMorphTrainer:
                 train_losses=train_losses,
                 train_eval_metrics=train_eval_metrics,
                 val_metrics=val_metrics,
+                termination_reason="target_reached"
+                if target_status["reached"]
+                else None,
             )
             self.ckpt_manager.save(checkpoint_state, float(ckpt_metric), is_best=improved)
+
+            if target_status["reached"]:
+                print(
+                    "\n[Target Stop] "
+                    f"{target_status['monitor']} reached "
+                    f"{float(target_status['value']):.4f} "
+                    f"(target {float(target_status['target']):.4f})."
+                )
+                break
 
             if (
                 (not improved)
                 and self.early_stopping_enabled
+                and not self.target_stop_only
                 and self.es_degradation_patience > 0
                 and self.es_degradation_counter >= self.es_degradation_patience
             ):
@@ -1885,8 +1981,49 @@ class VocalMorphTrainer:
                 )
                 break
 
-            if (not improved) and self.early_stopping_enabled and self.es_counter >= self.patience:
+            # Gap-aware early stopping: if train-val gap exceeds threshold and is growing
+            if (
+                (not improved)
+                and self.early_stopping_enabled
+                and not self.target_stop_only
+                and self.es_gap_patience > 0
+                and train_eval_metrics
+                and np.isfinite(gap)
+            ):
+                current_gap = float(gap)
+                if self.last_epoch_gap is not None and current_gap > self.last_epoch_gap * 1.05:
+                    self.es_gap_counter += 1
+                else:
+                    self.es_gap_counter = 0
+                self.last_epoch_gap = current_gap
+                if current_gap > self.es_gap_threshold and self.es_gap_counter >= self.es_gap_patience:
+                    print(
+                        "\n[Early Stop] "
+                        f"Train-val gap {current_gap:.2f}cm exceeds threshold "
+                        f"{self.es_gap_threshold:.1f}cm for {self.es_gap_patience} epochs."
+                    )
+                    break
+
+            if (
+                (not improved)
+                and self.early_stopping_enabled
+                and not self.target_stop_only
+                and self.es_counter >= self.patience
+            ):
                 print(f"\n[Early Stop] No improvement for {self.patience} epochs.")
+                break
+
+            if (
+                self.max_training_seconds is not None
+                and not self.target_stop_only
+                and self.training_started_at is not None
+                and (time.time() - self.training_started_at) >= self.max_training_seconds
+            ):
+                elapsed_hours = (time.time() - self.training_started_at) / 3600.0
+                print(
+                    f"\n[Time Limit] Reached {elapsed_hours:.2f}h "
+                    f"(max {self.max_training_seconds / 3600.0:.1f}h). Stopping training."
+                )
                 break
 
         # Final SWA evaluation if enabled

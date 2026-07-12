@@ -90,12 +90,13 @@ class HeightPriorHead(nn.Module):
         hidden_dim: int = 96,
         dropout: float = 0.10,
         constants: PhysicsConstants = DEFAULT_PHYSICS_CONSTANTS,
+        n_domains: int = 2,
     ):
         super().__init__()
         self.constants = constants
         self.physics_summary_dim = int(physics_summary_dim)
         in_dim = physics_dim + self.physics_summary_dim + 1 + 2 + domain_emb_dim
-        self.domain_emb = nn.Embedding(2, domain_emb_dim)
+        self.domain_emb = nn.Embedding(n_domains, domain_emb_dim)
         self.net = nn.Sequential(
             nn.LayerNorm(in_dim),
             nn.Linear(in_dim, hidden_dim),
