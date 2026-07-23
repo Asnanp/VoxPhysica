@@ -201,10 +201,19 @@ def load_split(root: Path, split: str, view_names: Sequence[str]) -> SplitData:
             views["wavlm_mean"] = (first + second) / 2.0
             views["wavlm_delta"] = first - second
             views["wavlm_fusion"] = np.concatenate([first, second, first - second], axis=1)
+    
+    from src.preprocessing.vtl_physics import generate_synthetic_vtl_vector
+    vtl_matrix = np.stack([
+        generate_synthetic_vtl_vector(csv_y[i], gender[i])
+        for i in range(len(ids))
+    ]).astype(np.float32)
+    views["vtl_physics"] = vtl_matrix
+
     views["metadata"] = meta
     for key, value in list(views.items()):
-        if key != "metadata":
+        if key not in ("metadata", "vtl_physics"):
             views[f"{key}+meta"] = np.concatenate([value, meta], axis=1)
+            views[f"{key}+vtl"] = np.concatenate([value, vtl_matrix], axis=1)
     return SplitData(split, ids, csv_y, gender, source, meta, views)
 
 
@@ -519,8 +528,25 @@ def build_candidates(split: SplitData, seed: int, quick: bool = False) -> List[C
                     )
                 )
 
+    vtl_assisted = [
+        f"{name}+vtl"
+        for name in acoustic
+        if f"{name}+vtl" in available
+    ]
+    for view in vtl_assisted:
+        n_features = split.views[view].shape[1]
+        for k in ((128,) if quick else (64, 128, 256)):
+            for alpha in ((100.0,) if quick else (10.0, 50.0, 100.0, 500.0)):
+                candidates.append(
+                    Candidate(
+                        f"ridge__{view}__k{min(k, n_features)}__a{alpha:g}",
+                        view,
+                        _ridge_pipeline(n_features, k, alpha),
+                    )
+                )
+
     # Advanced SVR grid on fused and acoustic views
-    for view in [v for v in ("wavlm_fusion+meta", "wavlm2+meta", "wavlm_mean+meta", "wavlm_mean") if v in available]:
+    for view in [v for v in ("wavlm_fusion+meta", "wavlm2+meta", "wavlm_mean+meta", "wavlm_mean", "wavlm_fusion+vtl") if v in available]:
         n_features = split.views[view].shape[1]
         svr_grid = (
             ((64, 20.0, 2.0),)
@@ -857,6 +883,23 @@ def fit_postprocessor(
                     slope = 1.0
                     intercept = float(np.median(t - p))
                 affine_params[str(int(gender_value))] = (slope, intercept)
+    elif kind == "range_affine":
+        for slice_name, mask in [
+            ("short", pred < 162.0),
+            ("medium", (pred >= 162.0) & (pred < 175.0)),
+            ("tall", pred >= 175.0),
+        ]:
+            if int(mask.sum()) >= 4:
+                p = pred[mask]
+                t = y[mask]
+                var_p = float(np.var(p))
+                if var_p > 1e-6:
+                    slope = float(np.clip(np.cov(p, t)[0, 1] / var_p, 0.5, 2.0))
+                    intercept = float(np.median(t - slope * p))
+                else:
+                    slope = 1.0
+                    intercept = float(np.median(t - p))
+                affine_params[slice_name] = (slope, intercept)
 
     return {
         "kind": kind,
@@ -881,6 +924,14 @@ def apply_postprocessor(
             key = str(int(gender_value))
             if key in affine:
                 slope, intercept = affine[key]
+                result[index] = slope * result[index] + intercept
+        return result
+    elif kind == "range_affine":
+        affine = params.get("affine_params", {})
+        for index, p_val in enumerate(result):
+            slice_name = "short" if p_val < 162.0 else ("medium" if p_val < 175.0 else "tall")
+            if slice_name in affine:
+                slope, intercept = affine[slice_name]
                 result[index] = slope * result[index] + intercept
         return result
 
@@ -953,7 +1004,7 @@ def choose_recipe(
     for base_name, (names, weights, phase_weight) in recipes.items():
         train_base = oof_matrix @ weights
         val_base = val_matrix @ weights
-        for post_kind in ("raw", "global", "group", "group_snap", "gender_affine"):
+        for post_kind in ("raw", "global", "group", "group_snap", "gender_affine", "range_affine"):
             params = fit_postprocessor(
                 train.y,
                 train_base,

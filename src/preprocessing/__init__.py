@@ -1,22 +1,30 @@
 from importlib import import_module
 
 from .augmentation import AUDIOMENTATIONS_AVAILABLE, AugmentationConfig, apply_augmentations, build_augmenter
-from .audio_enhancement import (
-    MicrophoneEnhancementConfig,
-    SpeechEnhancementReport,
-    WEBRTCVAD_AVAILABLE,
-    enhance_microphone_audio,
-)
-from .feature_extractor import (
-    FeatureConfig,
-    extract_all_features,
-    extract_mfcc,
-    extract_praat_features,
-    extract_spectral,
-    load_audio,
-    process_audio_file,
-    process_dataset,
-)
+try:
+    from .audio_enhancement import (
+        MicrophoneEnhancementConfig,
+        SpeechEnhancementReport,
+        WEBRTCVAD_AVAILABLE,
+        enhance_microphone_audio,
+    )
+except ImportError:
+    pass
+
+try:
+    from .feature_extractor import (
+        FeatureConfig,
+        extract_all_features,
+        extract_mfcc,
+        extract_praat_features,
+        extract_spectral,
+        load_audio,
+        process_audio_file,
+        process_dataset,
+    )
+except ImportError:
+    pass
+
 
 __all__ = [
     "FeatureConfig",
