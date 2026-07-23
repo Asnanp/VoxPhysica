@@ -1,0 +1,168 @@
+# ============================================================
+# VocalMorph V4.9 - Target SSL Full Clips + Clean Stats
+# ============================================================
+# Keeps all NISP+TIMIT SSL train clips, including static augmentation,
+# but normalizes targets using original-only clean train statistics.
+
+project:
+  name: VocalMorph-V4-TargetSSL-FullCleanStats
+  version: "4.9.0"
+  author: Asnan P
+  description: Full target-domain SSL clips with de-biased original-only normalization stats.
+
+data:
+  features_dir: data/features_v4_target_ssl_full_cleanstats/
+  split_manifests:
+    train: data/splits/train_clean.csv
+    val: data/splits/val_clean.csv
+    test: data/splits/test_clean.csv
+  sample_rate: 16000
+  skip_feature_contract_validation: true
+
+model:
+  name: VocalMorphV4
+  input_dim: 264
+  v4:
+    adapter_dim: 288
+    adapter_heads: 8
+    adapter_blocks: 2
+    adapter_ff_expansion: 3
+    adapter_conv_kernel: 15
+    dropout: 0.16
+    pool_hidden: 144
+    tower_hidden: 288
+    meta_dim: 13
+    meta_hidden: 64
+    use_ssl_backbone: false
+    ssl_model_name: "microsoft/wavlm-base-plus"
+    ssl_freeze: true
+    ssl_layers_to_use: 4
+
+training:
+  seed: 11
+  deterministic: false
+  epochs: 70
+  batch_size: 160
+  gradient_accumulation_steps: 1
+  num_workers: 4
+  prefetch_factor: 4
+  persistent_workers: true
+  pin_memory: true
+  device: cuda
+  amp: true
+  mixed_precision: true
+  allow_tf32: true
+  max_feature_frames: 480
+  train_crop_mode: random
+  eval_crop_mode: center
+  feature_smoothing_std: 0.0008
+
+  speaker_batching:
+    enabled: true
+    mode: height_balanced
+    speakers_per_batch: 40
+    clips_per_speaker: 4
+    height_bin_weights:
+      short: 1.85
+      medium: 1.00
+      tall: 1.08
+    gender_height_weights:
+      male_short: 1.50
+      female_short: 1.08
+      male_medium: 1.00
+      female_medium: 1.00
+      male_tall: 1.00
+      female_tall: 1.00
+    source_weights:
+      TIMIT: 1.10
+      NISP: 1.00
+    max_speaker_weight: 3.50
+    balance_gender: true
+    gender_balance_strength: 0.20
+
+  sample_weighting:
+    enabled: false
+
+  augmentation:
+    enabled: true
+    noise_p: 0.035
+    noise_std: 0.0015
+    time_mask_p: 0.035
+    time_mask_max_frac: 0.012
+    feat_mask_p: 0.025
+    feat_mask_max_frac: 0.007
+    scale_p: 0.035
+    scale_std: 0.007
+    temporal_jitter_p: 0.010
+    temporal_jitter_max_frac: 0.004
+    freq_mask_p: 0.0
+    freq_mask_max_frac: 0.0
+    mixup_p: 0.0
+    mixup_alpha: 0.0
+
+  ema:
+    enabled: true
+    decay: 0.9982
+    update_every: 1
+    warmup_steps: 240
+    use_for_eval: true
+
+  optimizer:
+    type: adamw
+    lr: 0.000035
+    weight_decay: 0.010
+    betas: [0.9, 0.999]
+    eps: 1.0e-8
+
+  scheduler:
+    type: cosine_annealing
+    T_max: 70
+    eta_min: 0.0000007
+
+  loss:
+    huber_delta: 0.70
+    huber_weight: 0.50
+    mae_weight: 0.40
+    smoothl1_weight: 0.10
+    gender_weight: 0.05
+    label_smoothing: 0.03
+    height_bin_loss_weight_short: 1.30
+    height_bin_loss_weight_medium: 1.00
+    height_bin_loss_weight_tall: 1.04
+    height_bin_loss_weight_male_short: 1.28
+    height_bin_loss_weight_female_short: 1.08
+    height_extreme_short_cm: 152.0
+    height_extreme_tall_cm: 190.0
+    height_extreme_loss_weight_short: 1.18
+    height_extreme_loss_weight_tall: 1.04
+    source_loss_weight_timit: 1.06
+    source_loss_weight_nisp: 1.00
+    source_loss_weight_external: 1.00
+
+  lr_warmup_epochs: 5
+  lr_warmup_start_factor: 0.15
+
+  early_stopping:
+    enabled: true
+    patience: 14
+    monitor: height_mae_speaker_balanced
+    mode: min
+
+  gradient_clipping:
+    enabled: true
+    max_norm: 1.0
+
+logging:
+  tensorboard:
+    enabled: false
+    log_dir: outputs/v4_target_ssl_full_cleanstats/logs/
+  checkpoint:
+    dir: outputs/v4_target_ssl_full_cleanstats/checkpoints/
+    save_top_k: 3
+    monitor: height_mae_speaker_balanced
+    mode: min
+
+evaluation:
+  targets:
+    height_mae_cm: 3.0
+    speaker_balanced_mae_cm: 4.0

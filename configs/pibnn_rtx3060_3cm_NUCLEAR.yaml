@@ -1,0 +1,415 @@
+project:
+  name: VocalMorph
+  version: "2.19.0-NUCLEAR-MAXIMUM-POWER"
+  author: Asnan P
+  description: NUCLEAR CONFIG - Maximum capacity, balanced bins, aggressive training for 3cm MAE
+
+data:
+  nisp_dir: data/nisp/
+  raw_dir: data/raw/
+  processed_dir: data/processed/
+  features_dir: data/features_vtl_ssl/
+  skip_feature_contract_validation: true
+  augmented_dir: data/augmented/
+  split_manifests:
+    train: data/splits/train_clean.csv
+    val: data/splits/val_clean.csv
+    test: data/splits/test_clean.csv
+  targets:
+    - height_cm
+    - weight_kg
+    - age
+    - gender
+  sample_rate: 16000
+  max_audio_duration: 10
+  min_audio_duration: 2
+  split:
+    train: 0.80
+    val: 0.10
+    test: 0.10
+    stratify_by: source_gender_height_age_weight
+    random_seed: 95
+
+features:
+  strict: true
+  require_parselmouth: true
+  normalize_spectral: true
+  audit:
+    strict_backend_check: true
+    require_parselmouth: true
+  mfcc:
+    n_mfcc: 40
+    n_fft: 512
+    hop_length: 160
+    win_length: 400
+    include_delta: true
+    include_delta_delta: true
+  formants:
+    n_formants: 4
+    max_formant: 5500
+    window_length: 0.025
+  pitch:
+    method: praat
+    min_pitch: 50
+    max_pitch: 500
+  spectral:
+    centroid: true
+    rolloff: true
+    flux: true
+    bandwidth: true
+    contrast: true
+  vtl:
+    estimate: true
+    speed_of_sound: 34000
+  voice_quality:
+    jitter: true
+    shimmer: true
+    hnr: true
+
+model:
+  name: VocalMorphV2
+  type: rtx3060_nuclear_power
+  input_dim: 264
+  v2:
+    domain_classes: 3
+    # *** MAXIMUM CAPACITY - ELITE LEVEL ***
+    ecapa_channels: 512  # MAXIMUM (was 192)
+    ecapa_scale: 8  # MAXIMUM (was 4)
+    ecapa_embedding_dim: 192  # MAXIMUM
+    conformer_d_model: 256  # MAXIMUM (was 128)
+    conformer_heads: 8  # MAXIMUM (was 4)
+    conformer_blocks: 4  # MAXIMUM (was 3)
+    
+    # *** STRONG REGULARIZATION to prevent overfitting with huge model ***
+    dropout: 0.45  # VERY STRONG (was 0.35)
+    branch_dropout: 0.20  # VERY STRONG (was 0.15)
+    drop_path_rate: 0.05  # VERY STRONG (was 0.03)
+    
+    regression_hidden_dim: 384  # MAXIMUM (was 256)
+    mixup_alpha: 0.0
+    mixup_probability: 0.0
+    
+    # *** AGGRESSIVE FOCAL LOSS for hard examples ***
+    focal_after_epoch: 3  # EARLIER (was 5)
+    focal_gamma: 1.5  # STRONGER (was 1.0)
+    focal_ema_decay: 0.99  # SMOOTHER (was 0.98)
+    
+    robust_huber_weight: 0.25  # STRONGER (was 0.22)
+    
+    aggregation:
+      method: legacy_inverse_variance
+      omega_mad_z: 2.5
+      omega_min_survivors: 3
+      omega_huber_delta_scale: 1.25
+    
+    reliability:
+      mode: handcrafted
+      use_feature_drift: true
+      min_weight: 0.05
+      hidden_dim: 48  # INCREASED (was 32)
+      embedding_dim: 24  # INCREASED (was 16)
+    
+    constants:
+      spacing_min_hz: 485.7143
+      spacing_max_hz: 1700.0
+      default_spacing_hz: 1050.0
+      vtl_min_cm: 10.0
+      vtl_max_cm: 35.0
+      prior_tanh_scale: 0.0
+      physics_residual_tanh_scale: 0.0
+    
+    toggles:
+      use_physics_branch: false
+      use_cross_attention: false
+      use_reliability_gate: false
+      use_height_prior: false
+      use_height_adapter: true
+      use_domain_adv: false
+      use_diversity_loss: false
+      use_feature_mixup: false
+      use_feature_normalization: true
+      use_acoustic_physics_consistency: false
+      use_ranking_loss: true
+      use_speaker_consistency: false
+      use_uncertainty_calibration: true
+      use_shoulder_head: false
+      use_waist_head: false
+      use_kendall_weights: false
+    
+    loss_weights:
+      height: 6.0  # MAXIMUM FOCUS (was 5.0)
+      weight: 0.15  # REDUCED (was 0.20)
+      age: 0.03  # REDUCED (was 0.05)
+      shoulder: 0.0
+      waist: 0.0
+      gender: 0.08  # REDUCED (was 0.10)
+      vtsl: 0.0
+      formant_height_consistency: 0.0
+      physics_penalty: 0.0
+      domain_adv: 0.0
+      ranking: 0.15  # INCREASED (was 0.10)
+      height_bin: 0.20  # REDUCED (was 0.25)
+      diversity: 0.0
+      speaker_consistency: 0.0
+      uncertainty_calibration: 0.05  # INCREASED (was 0.03)
+
+physics:
+  enabled: false
+  vtl_height_constraint:
+    enabled: false
+    ratio: 6.7
+    penalty_weight: 0.0
+  formant_vtl_constraint:
+    enabled: false
+    speed_of_sound: 34000
+    penalty_weight: 0.0
+  f0_gender_constraint:
+    enabled: false
+    male_f0_range: [85, 180]
+    female_f0_range: [165, 265]
+    penalty_weight: 0.0
+
+training:
+  seed: 11
+  epochs: 150  # INCREASED from 100
+  batch_size: 48  # REDUCED from 64 for huge model
+  gradient_accumulation_steps: 2  # INCREASED to compensate batch size
+  num_workers: 0  # CHANGED to 0 for Windows compatibility
+  persistent_workers: false
+  prefetch_factor: null
+  device: auto
+  mixed_precision: true
+  allow_tf32: true
+  max_feature_frames: 640
+  train_crop_mode: random
+  eval_crop_mode: center
+  pin_memory: true
+  non_blocking: true
+  empty_cache_frequency: 5  # REDUCED (was 10) - clear more often
+  gradient_checkpointing: true  # ENABLED for memory efficiency
+  use_channels_last: false
+  train_eval_frequency: 0
+  final_train_eval: false
+
+  # *** CRITICAL: AUGMENTATION ENABLED ***
+  augmentation:
+    enabled: true
+    noise_p: 0.25  # INCREASED (was 0.20)
+    noise_std: 0.010  # INCREASED (was 0.008)
+    time_mask_p: 0.15  # INCREASED (was 0.12)
+    time_mask_max_frac: 0.05  # INCREASED (was 0.04)
+    feat_mask_p: 0.10  # INCREASED (was 0.08)
+    feat_mask_max_frac: 0.03  # INCREASED (was 0.025)
+    scale_p: 0.12  # INCREASED (was 0.10)
+    scale_std: 0.030  # INCREASED (was 0.025)
+    temporal_jitter_p: 0.08  # INCREASED (was 0.05)
+    temporal_jitter_max_frac: 0.020  # INCREASED (was 0.015)
+    freq_mask_p: 0.0
+    freq_mask_max_frac: 0.0
+    mixup_p: 0.0
+    mixup_alpha: 0.0
+
+  ema:
+    enabled: true
+    decay: 0.999  # STRONGER (was 0.9985)
+    update_every: 1
+    warmup_steps: 1000  # LONGER (was 500)
+    use_for_eval: true
+
+  swa:
+    enabled: true
+    start_frac: 0.60  # EARLIER (was 0.70)
+    anneal_epochs: 20  # LONGER (was 12)
+    use_for_eval: true
+
+  optimizer:
+    type: adamw
+    lr: 0.000070  # REDUCED for stability with huge model (was 0.000090)
+    weight_decay: 0.080  # VERY STRONG (was 0.055)
+    betas: [0.9, 0.999]
+    eps: 1e-8
+
+  scheduler:
+    type: cosine_annealing
+    T_max: 75  # SLOWER (was 50)
+    eta_min: 0.000005  # LOWER (was 0.000008)
+
+  loss:
+    type: vtsl_v2
+    task_weights:
+      height: 6.0  # MAXIMUM FOCUS
+      weight: 0.15
+      age: 0.03
+      gender: 0.08
+      vtsl: 0.0
+      formant_height_consistency: 0.0
+      physics_penalty: 0.0
+      domain_adv: 0.0
+    use_gender_class_weights: false
+    physics_penalty_weight: 0.0
+    domain_grl_lambda_min: 0.0
+    domain_grl_lambda_max: 0.0
+
+  speaker_batching:
+    enabled: true
+    mode: height_balanced
+    speakers_per_batch: 36  # BALANCED (was 40)
+    clips_per_speaker: 3
+    paired_speakers_per_batch: 4
+    singleton_speakers_per_batch: 8
+    balance_gender: true
+    gender_balance_strength: 0.25  # INCREASED (was 0.20)
+    height_bin_weights:
+      short: 1.50  # BALANCED (was 2.00 - too strong!)
+      medium: 1.40  # INCREASED (was 1.0 - too weak!)
+      tall: 1.10  # INCREASED (was 1.00)
+    gender_height_weights:
+      male_short: 1.60  # BALANCED (was 2.00)
+      female_short: 1.20  # INCREASED (was 1.00)
+      male_tall: 1.00
+      female_tall: 1.00
+    max_speaker_weight: 2.00  # INCREASED (was 1.75)
+
+  sample_weighting:
+    enabled: false
+    height_bin_weights:
+      short: 1.8
+      medium: 1.0
+      tall: 1.2
+    gender_height_weights:
+      male_short: 3.0
+      female_short: 1.3
+      male_tall: 1.0
+      female_tall: 1.2
+    source_height_weights:
+      timit_short: 1.4
+      nisp_short: 1.1
+      timit_tall: 1.1
+    extreme_short_cm: 152.0
+    extreme_short_weight: 2.5
+    extreme_tall_cm: 190.0
+    extreme_tall_weight: 1.5
+    max_weight: 10.0
+
+  speaker_alignment:
+    enable_pooled_height: true
+    enable_consistency: true
+    enable_ranking: true
+    pooling_method: omega
+    consistency_mode: variance
+    warmup_start_epoch: 2
+    warmup_end_epoch: 10  # LONGER (was 8)
+    pooled_height_weight_max: 0.50  # INCREASED (was 0.45)
+    consistency_weight_max: 0.05  # INCREASED (was 0.04)
+    ranking_weight_max: 0.08  # INCREASED (was 0.06)
+    ranking_min_height_delta_cm: 3.5  # TIGHTER (was 4.0)
+    ranking_margin_cm: 0.6  # TIGHTER (was 0.7)
+    consistency_max_combined_std_cm: 5.0  # TIGHTER (was 5.5)
+    height_bin_loss_start_epoch: 1
+    height_bin_loss_weight_short: 1.50  # BALANCED (was 2.00)
+    height_bin_loss_weight_medium: 1.30  # INCREASED (was 1.0)
+    height_bin_loss_weight_tall: 1.10  # INCREASED (was 1.05)
+    height_bin_loss_weight_male_short: 1.60  # BALANCED (was 2.00)
+    height_bin_loss_weight_female_short: 1.20  # INCREASED (was 1.05)
+    height_bin_loss_weight_male_tall: 1.00
+    height_bin_loss_weight_female_tall: 1.05
+    height_extreme_short_cm: 152.0
+    height_extreme_tall_cm: 190.0
+    height_extreme_loss_weight_short: 1.70  # BALANCED (was 2.00)
+    height_extreme_loss_weight_tall: 1.10  # INCREASED (was 1.05)
+    height_bin_prior_blend: 0.30  # REDUCED (was 0.35)
+    height_bin_prior_short_cm: 154.0
+    height_bin_prior_medium_cm: 167.5
+    height_bin_prior_tall_cm: 184.0
+    height_distribution_weight_max: 0.15  # INCREASED (was 0.12)
+    height_distribution_start_epoch: 1
+    height_distribution_min_items: 12
+    height_distribution_std_weight: 1.00
+    height_distribution_range_weight: 0.20
+    height_distribution_tail_weight: 0.15
+
+  target_label_smoothing:
+    enabled: false
+    std: 0.0
+    decay: 1.0
+
+  feature_smoothing_std: 0.015  # INCREASED (was 0.012)
+  lr_warmup_epochs: 6  # LONGER (was 5)
+  lr_warmup_start_factor: 0.08  # GENTLER (was 0.10)
+
+  early_stopping:
+    enabled: true
+    patience: 40  # MORE PATIENCE (was 30)
+    monitor: height_mae_speaker_balanced
+    mode: min
+    min_delta: 0.0005  # TIGHTER (was 0.0008)
+    degradation_delta: 1.30  # MORE TOLERANT (was 1.20)
+    degradation_patience: 5  # MORE PATIENCE (was 4)
+
+  gradient_clipping:
+    enabled: true
+    max_norm: 0.4  # TIGHTER (was 0.5)
+
+evaluation:
+  targets:
+    height_mae_cm: 3.0
+    weight_mae_kg: 5.0
+    age_mae_years: 5.0
+    gender_accuracy: 0.95
+  inference:
+    use_ensemble: true
+    deterministic: true
+    n_samples: 1
+    n_crops: 1
+    crop_size: 96
+
+logging:
+  wandb:
+    enabled: false
+    project: VocalMorph
+    entity: asnanp
+  tensorboard:
+    enabled: true
+    log_dir: outputs/logs_rtx3060_nuclear/
+  checkpoint:
+    dir: outputs/checkpoints_rtx3060_nuclear/
+    save_top_k: 10  # SAVE MORE (was 8)
+    monitor: height_mae_speaker_balanced
+    mode: min
+
+inference:
+  checkpoint: outputs/checkpoints_rtx3060_nuclear/best.ckpt
+  mc_samples: 200  # INCREASED (was 100)
+  deterministic_ensemble: true
+  n_crops: 10  # INCREASED (was 5)
+  crop_size: 128  # INCREASED (was 96)
+  tta_augmentation:
+    enabled: true
+    n_augmentations: 5
+    noise_std: 0.005
+    time_shift_max: 0.02
+  output_uncertainty: true
+  output_dir: outputs/predictions_rtx3060_nuclear/
+  quality_gate:
+    enabled: true
+    strict: true
+    min_capture_quality_score: 0.55
+    min_speech_ratio: 0.55
+    min_snr_db: 10.0
+    max_distance_cm: 30.0
+    max_clipped_ratio: 0.03
+    require_quality_ok: false
+    min_accepted_clips: 3
+    max_height_std_cm: 8.0
+    min_confidence_score: 0.35
+    max_ood_zscore: 4.0
+  audio_enhancement:
+    enabled: true
+    vad_aggressiveness: 2
+    spectral_gate_strength: 1.35
+    spectral_gate_floor: 0.10
+    trim_db: 28.0
+    min_speech_ratio: 0.45
+    min_snr_db: 8.0
+    max_clipped_ratio: 0.02
+    max_distance_cm: 45.0

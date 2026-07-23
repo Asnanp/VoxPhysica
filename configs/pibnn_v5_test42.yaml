@@ -1,0 +1,197 @@
+data:
+  features_dir: data/features_vtl_ssl/
+  skip_feature_contract_validation: true
+  split_manifests:
+    test: data/splits/test_clean.csv
+    train: data/splits/train_clean.csv
+    val: data/splits/val_clean.csv
+  targets:
+  - height_cm
+  - weight_kg
+  - age
+  - gender
+evaluation:
+  inference:
+    crop_size: 96
+    deterministic: true
+    n_crops: 1
+    n_samples: 1
+    use_ensemble: false
+  targets:
+    age_mae_years: 5.0
+    gender_accuracy: 0.95
+    height_mae_cm: 3.0
+    weight_mae_kg: 5.0
+features:
+  formants:
+    n_formants: 4
+  mfcc:
+    include_delta: true
+    include_delta_delta: true
+    n_mfcc: 40
+  strict: true
+inference:
+  checkpoint: outputs/checkpoints_v5_seed7/best.ckpt
+  crop_size: 96
+  deterministic_ensemble: true
+  mc_samples: 8
+  n_crops: 3
+  output_dir: outputs/predictions_v5_seed7/
+  output_uncertainty: true
+logging:
+  checkpoint:
+    dir: outputs/checkpoints_v5_test42
+    mode: min
+    monitor: height_mae_speaker
+    save_top_k: 10
+  tensorboard:
+    enabled: false
+    log_dir: outputs/logs_v5_test42
+  wandb:
+    enabled: false
+model:
+  input_dim: 264
+  name: VocalMorphV5
+  type: direct_first_range_corrected
+  v5:
+    conv_kernel: 17
+    d_model: 128
+    direct_blend: 0.9
+    dropout: 0.22
+    expert_delta_cm: 18.0
+    ff_mult: 3
+    height_bin_classes: 5
+    meta_dim: 48
+    n_blocks: 3
+    n_heads: 4
+    n_height_experts: 3
+physics:
+  enabled: false
+project:
+  author: Codebuff
+  description: 'Test: seed 42 with seed7 config format'
+  name: VocalMorph
+  version: 5.2.0-optimized-direct
+training:
+  allow_tf32: true
+  augmentation:
+    enabled: true
+    feat_mask_max_frac: 0.02
+    feat_mask_p: 0.07
+    freq_mask_max_frac: 0.0
+    freq_mask_p: 0.0
+    mixup_alpha: 0.2
+    mixup_p: 0.3
+    noise_p: 0.18
+    noise_std: 0.007
+    scale_p: 0.1
+    scale_std: 0.02
+    temporal_jitter_max_frac: 0.012
+    temporal_jitter_p: 0.04
+    time_mask_max_frac: 0.035
+    time_mask_p: 0.1
+  batch_size: 64
+  device: cuda
+  early_stopping:
+    degradation_delta: 1.25
+    degradation_patience: 7
+    enabled: true
+    min_delta: 0.001
+    mode: min
+    monitor: height_mae_speaker
+    patience: 30
+  ema:
+    decay: 0.998
+    enabled: true
+    update_every: 1
+    use_for_eval: true
+    warmup_steps: 0
+  empty_cache_frequency: 10
+  epochs: 150
+  eval_batch_size: 128
+  eval_crop_mode: center
+  eval_num_workers: 2
+  eval_pin_memory: false
+  eval_prefetch_factor: 2
+  feature_smoothing_std: 0.003
+  final_train_eval: false
+  gradient_accumulation_steps: 2
+  gradient_checkpointing: false
+  gradient_clipping:
+    enabled: true
+    max_norm: 0.8
+  loss:
+    domain_grl_lambda_max: 0.0
+    domain_grl_lambda_min: 0.0
+    type: vtsl_v2
+    use_gender_class_weights: false
+    v5:
+      age_weight: 0.0
+      gate_entropy_weight: 0.0
+      gender_weight: 0.08
+      height_bin_weight: 0.0
+      height_huber_weight: 0.5
+      height_mae_weight: 0.4
+      height_nll_weight: 0.0
+      huber_delta_norm: 0.5
+      medium_weight: 1.0
+      rank_margin_cm: 2.5
+      ranking_weight: 0.0
+      short_weight: 1.4
+      speaker_consistency_weight: 0.05
+      tall_weight: 1.1
+      weight_weight: 0.0
+  lr_warmup_epochs: 8
+  lr_warmup_start_factor: 0.12
+  max_feature_frames: 640
+  mixed_precision: true
+  non_blocking: true
+  num_workers: 4
+  optimizer:
+    betas:
+    - 0.9
+    - 0.995
+    eps: 1e-8
+    lr: 5.5e-05
+    type: adamw
+    weight_decay: 0.05
+  persistent_workers: true
+  pin_memory: true
+  prefetch_factor: 2
+  sample_weighting:
+    enabled: false
+  scheduler:
+    T_max: 150
+    eta_min: 4.0e-06
+    type: cosine_annealing
+  seed: 42
+  speaker_batching:
+    balance_gender: true
+    clips_per_speaker: 2
+    enabled: true
+    gender_balance_strength: 0.15
+    gender_height_weights:
+      female_short: 1.1
+      female_tall: 1.05
+      male_short: 1.25
+      male_tall: 1.05
+    height_bin_weights:
+      medium: 1.0
+      short: 1.25
+      tall: 1.1
+    max_speaker_weight: 1.65
+    mode: height_balanced
+    paired_speakers_per_batch: 4
+    singleton_speakers_per_batch: 10
+    speakers_per_batch: 32
+  swa:
+    anneal_epochs: 10
+    enabled: false
+    start_frac: 0.75
+    use_for_eval: false
+  target_label_smoothing:
+    decay: 1.0
+    enabled: false
+    std: 0.0
+  train_crop_mode: random
+  train_eval_frequency: 0

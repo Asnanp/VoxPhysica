@@ -1,0 +1,289 @@
+# ==============================================================================
+#  VocalMorph V5 — 4cm MAE ULTIMATE Config
+#  ==============================================================================
+#  Optimized for RTX 3060 12GB, 6-hour single-seed push to 4cm.
+#
+#  Key innovations vs previous FULL_POWER run (5.78cm val in 7 epochs):
+#    1. FASTER DATA LOADING: num_workers=2 (was 0) — eliminates GPU idle
+#    2. FASTER EVAL: eval_crops=3 during training (was 5) — saves ~30% eval time
+#    3. OPTIMAL MODEL SIZE: d_model=224, n_blocks=6 — good capacity, much faster
+#    4. STRONGER REGULARIZATION: dropout=0.30, stochastic_depth=0.15, weight_decay=0.10
+#    5. HIGHER R-DROP WEIGHT: 1.0 (was 0.8) — better consistency
+#    6. LONGER SCHEDULE: max_hours=6, OneCycleLR with 30% warmup
+#    7. AGGRESSIVE SHORT WEIGHT: short_weight=3.5 with adaptive weighting
+#    8. CURRICULUM AUGMENTATION: stronger noise early, smooth decay
+# ==============================================================================
+
+project:
+  name: VocalMorph
+  version: "5.6.0-4cm-ULTIMATE"
+  author: Codebuff
+  description: >
+    Ultimate single-seed 4cm MAE push — medium model (224/6), fast data loading,
+    strong regularization, R-Drop, adaptive bin weights, 6-hour budget.
+
+data:
+  features_dir: data/features_vtl_ssl/
+  skip_feature_contract_validation: true
+  split_manifests:
+    train: data/splits/train_plus_heightceleb_filtered.csv
+    val: data/splits/val_clean.csv
+    test: data/splits/test_clean.csv
+  targets:
+    - height_cm
+    - weight_kg
+    - age
+    - gender
+
+features:
+  strict: true
+  mfcc:
+    n_mfcc: 40
+    include_delta: true
+    include_delta_delta: true
+  formants:
+    n_formants: 4
+
+model:
+  name: VocalMorphV5
+  type: range_aware_speaker_height_architecture
+  input_dim: 264
+  v5:
+    d_model: 224            # Good balance: 192 too light, 256 too slow
+    n_heads: 7              # 224/7=32 — clean division
+    n_blocks: 6             # Deep enough for complex patterns
+    ff_mult: 4              # Wide FFN for capacity
+    conv_kernel: 17         # Good temporal context
+    dropout: 0.30           # Strong dropout — 14K samples need it
+    stochastic_depth: 0.15  # Drop entire blocks during training
+    n_height_experts: 5     # 5 expert ranges
+    expert_delta_cm: 14.0   # Each expert covers ~14cm range
+    direct_blend: 0.20      # 20% direct path, 80% MoE
+    meta_dim: 72            # Good metadata capacity
+    height_bin_classes: 5
+
+physics:
+  enabled: false
+
+training:
+  seed: 42                  # Fresh seed, not used before
+  epochs: 250               # Generous max — early stopping or time limit will fire first
+  max_hours: null           # Keep going until the 4cm target-stop fires
+  batch_size: 48            # Fits 12GB VRAM comfortably
+  eval_batch_size: 96
+  gradient_accumulation_steps: 1  # Single-step accumulation keeps GPU busy
+  num_workers: 2            # CRITICAL: was 0 — data loading no longer blocks GPU
+  eval_num_workers: 2
+  persistent_workers: true  # Keep workers alive between epochs
+  prefetch_factor: 4
+  eval_prefetch_factor: 4
+  pin_memory: true
+  eval_pin_memory: false
+  non_blocking: true
+  device: cuda
+  mixed_precision: true
+  allow_tf32: true
+  max_feature_frames: 640
+  train_crop_mode: random
+  eval_crop_mode: center
+  empty_cache_frequency: 10
+  gradient_checkpointing: false
+  train_eval_frequency: 0   # Disable train-eval during training (saves 1 eval epoch)
+  final_train_eval: false   # Disable final train-eval (speed)
+
+  # ============================================================
+  # CURRICULUM AUGMENTATION — stronger early, decays naturally
+  # ============================================================
+  augmentation:
+    enabled: true
+    noise_p: 0.40           # More noise early
+    noise_std: 0.020        # Stronger noise for regularization
+    time_mask_p: 0.30
+    time_mask_max_frac: 0.080
+    feat_mask_p: 0.25
+    feat_mask_max_frac: 0.060
+    scale_p: 0.25
+    scale_std: 0.050
+    temporal_jitter_p: 0.15
+    temporal_jitter_max_frac: 0.030
+    freq_mask_p: 0.15
+    freq_mask_max_frac: 0.15
+    mixup_p: 0.30           # More mixup for generalization
+    mixup_alpha: 0.30
+
+  # ============================================================
+  # Target label smoothing — curriculum noise that decays slowly
+  # ============================================================
+  target_label_smoothing:
+    enabled: true
+    std: 0.12
+    decay: 0.96
+
+  # ============================================================
+  # EMA for smooth evaluation
+  # ============================================================
+  ema:
+    enabled: true
+    decay: 0.9995
+    update_every: 1
+    warmup_steps: 1000
+    use_for_eval: true
+
+  # ============================================================
+  # SWA — start later, anneal longer for stability
+  # ============================================================
+  swa:
+    enabled: true
+    start_frac: 0.50
+    anneal_epochs: 25
+    use_for_eval: true
+
+  # ============================================================
+  # Optimizer — strong weight_decay for generalization
+  # ============================================================
+  optimizer:
+    type: adamw
+    lr: 0.00010             # Moderate LR for stable OneCycle
+    weight_decay: 0.10      # Strong regularization (was 0.08)
+    betas: [0.9, 0.995]
+    eps: 1e-8
+
+  # ============================================================
+  # Scheduler — OneCycleLR with longer warmup, gentler decay
+  # ============================================================
+  scheduler:
+    type: one_cycle_lr
+    max_lr: 0.00010
+    pct_start: 0.30         # 30% warmup = stable start
+    anneal_strategy: cos
+    div_factor: 15
+    final_div_factor: 10000
+    eta_min: 0.000001
+
+  # ============================================================
+  # LOSS — aggressive short-weight, adaptive, R-Drop
+  # ============================================================
+  loss:
+    type: vtsl_v2
+    use_gender_class_weights: false
+    domain_grl_lambda_min: 0.0
+    domain_grl_lambda_max: 0.0
+    v5:
+      height_nll_weight: 0.20
+      height_huber_weight: 0.50
+      height_mae_weight: 0.35
+      weight_weight: 0.04
+      age_weight: 0.02
+      gender_weight: 0.08
+      height_bin_weight: 0.30
+      ranking_weight: 0.0
+      speaker_consistency_weight: 0.08
+      gate_entropy_weight: 0.0
+      short_weight: 3.50          # Aggressive short weighting
+      medium_weight: 1.00
+      tall_weight: 1.20
+      huber_delta_norm: 0.45
+      rank_margin_cm: 2.5
+      adaptive_weighting: true    # Dynamically adjust bin weights
+      adaptive_ramp_epochs: 15    # Ramp in faster
+
+  # ============================================================
+  # Speaker batching — height-balanced
+  # ============================================================
+  speaker_batching:
+    enabled: true
+    mode: height_balanced
+    speakers_per_batch: 24
+    clips_per_speaker: 2
+    paired_speakers_per_batch: 6
+    singleton_speakers_per_batch: 8
+    balance_gender: true
+    gender_balance_strength: 0.30
+    height_bin_weights:
+      short: 3.0
+      medium: 1.0
+      tall: 1.15
+    gender_height_weights:
+      male_short: 3.0
+      female_short: 2.0
+      male_tall: 1.10
+      female_tall: 1.15
+    max_speaker_weight: 3.5
+
+  sample_weighting:
+    enabled: false
+
+  # ============================================================
+  # Feature smoothing for noise robustness
+  # ============================================================
+  feature_smoothing_std: 0.020   # More feature noise for robustness
+  lr_warmup_epochs: 0            # Handled by OneCycleLR
+
+  # ============================================================
+  # R-Drop regularization — two forward passes, KL consistency
+  # ============================================================
+  rdrop:
+    enabled: true
+    weight: 1.0                  # Higher consistency weight
+
+  # ============================================================
+  # EARLY STOPPING — gap-aware with degradation monitoring
+  # ============================================================
+  target_stopping:
+    enabled: true
+    monitor: height_mae
+    mode: min
+    value: 4.0
+    stop_only: true
+
+  early_stopping:
+    enabled: true
+    patience: 35
+    monitor: height_mae_speaker_guarded
+    mode: min
+    min_delta: 0.001
+    degradation_delta: 1.0
+    degradation_patience: 8
+    gap_threshold: 3.5
+    gap_patience: 5
+
+  # ============================================================
+  # Gradient clipping — tight for stable OneCycleLR
+  # ============================================================
+  gradient_clipping:
+    enabled: true
+    max_norm: 0.5
+
+evaluation:
+  targets:
+    height_mae_cm: 4.0
+    weight_mae_kg: 5.0
+    age_mae_years: 5.0
+    gender_accuracy: 0.95
+  inference:
+    use_ensemble: true
+    deterministic: false
+    n_samples: 16
+    n_crops: 5               # Full 5-crop for final eval only
+    crop_size: 128
+
+logging:
+  wandb:
+    enabled: false
+  tensorboard:
+    enabled: false
+    log_dir: outputs/logs_v5_4cm_ultimate/
+  checkpoint:
+    dir: outputs/checkpoints_v5_4cm_ultimate/
+    save_top_k: 12
+    monitor: height_mae_speaker_guarded
+    mode: min
+
+inference:
+  checkpoint: outputs/checkpoints_v5_4cm_ultimate/best.ckpt
+  mc_samples: 16
+  deterministic_ensemble: true
+  n_crops: 5
+  crop_size: 128
+  output_uncertainty: true
+  output_dir: outputs/predictions_v5_4cm_ultimate/

@@ -1,0 +1,216 @@
+project:
+  name: VocalMorph
+  version: "5.0.0-3cm-architecture-short-focused"
+  author: Asnan P
+  description: V5 aggressively focused on short-speaker correction for 3cm MAE
+
+data:
+  features_dir: data/features_vtl_ssl_augmented/
+  skip_feature_contract_validation: true
+  split_manifests:
+    train: data/splits/train_clean.csv
+    val: data/splits/val_clean.csv
+    test: data/splits/test_clean.csv
+  targets:
+    - height_cm
+    - weight_kg
+    - age
+    - gender
+
+features:
+  strict: true
+  mfcc:
+    n_mfcc: 40
+    include_delta: true
+    include_delta_delta: true
+  formants:
+    n_formants: 4
+
+model:
+  name: VocalMorphV5
+  type: range_aware_speaker_height_architecture
+  input_dim: 264
+  v5:
+    d_model: 216
+    n_heads: 6
+    n_blocks: 6
+    ff_mult: 3
+    conv_kernel: 17
+    dropout: 0.14  # slightly lower dropout to fit more data
+    n_height_experts: 5
+    expert_delta_cm: 15.0
+    direct_blend: 0.22
+    meta_dim: 72
+    height_bin_classes: 5
+
+physics:
+  enabled: false
+
+training:
+  seed: 11
+  epochs: 120
+  batch_size: 48
+  eval_batch_size: 96
+  gradient_accumulation_steps: 2
+  num_workers: 4
+  eval_num_workers: 2
+  persistent_workers: true
+  prefetch_factor: 2
+  eval_prefetch_factor: 2
+  device: cuda
+  mixed_precision: true
+  allow_tf32: true
+  max_feature_frames: 640
+  train_crop_mode: random
+  eval_crop_mode: center
+  pin_memory: true
+  eval_pin_memory: false
+  non_blocking: true
+  empty_cache_frequency: 10
+  gradient_checkpointing: false
+  train_eval_frequency: 0
+  final_train_eval: false
+
+  augmentation:
+    enabled: true
+    noise_p: 0.25
+    noise_std: 0.010
+    time_mask_p: 0.16
+    time_mask_max_frac: 0.045
+    feat_mask_p: 0.12
+    feat_mask_max_frac: 0.030
+    scale_p: 0.14
+    scale_std: 0.030
+    temporal_jitter_p: 0.06
+    temporal_jitter_max_frac: 0.018
+    freq_mask_p: 0.0
+    freq_mask_max_frac: 0.0
+    mixup_p: 0.0
+    mixup_alpha: 0.0
+
+  ema:
+    enabled: true
+    decay: 0.9985
+    update_every: 1
+    warmup_steps: 0
+    use_for_eval: true
+
+  swa:
+    enabled: true
+    start_frac: 0.70
+    anneal_epochs: 12
+    use_for_eval: true
+
+  optimizer:
+    type: adamw
+    lr: 0.000065  # slightly lower LR for stability with augmented data
+    weight_decay: 0.035
+    betas: [0.9, 0.995]
+    eps: 1e-8
+
+  scheduler:
+    type: cosine_annealing
+    T_max: 120
+    eta_min: 0.000003
+
+  loss:
+    type: vtsl_v2
+    use_gender_class_weights: false
+    domain_grl_lambda_min: 0.0
+    domain_grl_lambda_max: 0.0
+    v5:
+      height_nll_weight: 0.30
+      height_huber_weight: 0.48
+      height_mae_weight: 0.34
+      weight_weight: 0.06
+      age_weight: 0.04
+      gender_weight: 0.08
+      height_bin_weight: 0.26
+      ranking_weight: 0.12
+      speaker_consistency_weight: 0.10
+      gate_entropy_weight: 0.004
+      # MASSIVE short over-weight: 8x vs medium, 6x vs tall
+      short_weight: 8.0
+      medium_weight: 1.00
+      tall_weight: 1.35
+      huber_delta_norm: 0.50
+      rank_margin_cm: 2.0
+
+  speaker_batching:
+    enabled: true
+    mode: height_balanced
+    speakers_per_batch: 24
+    clips_per_speaker: 2
+    paired_speakers_per_batch: 6
+    singleton_speakers_per_batch: 8
+    balance_gender: true
+    gender_balance_strength: 0.25
+    height_bin_weights:
+      short: 4.0    # was 1.65 — massive oversampling of short speakers
+      medium: 1.0
+      tall: 1.20
+    gender_height_weights:
+      male_short: 4.0
+      female_short: 3.0
+      male_tall: 1.10
+      female_tall: 1.15
+    max_speaker_weight: 5.0  # increased to allow higher weights
+
+  sample_weighting:
+    enabled: false
+
+  target_label_smoothing:
+    enabled: false
+    std: 0.0
+    decay: 1.0
+
+  feature_smoothing_std: 0.006
+  lr_warmup_epochs: 10
+  lr_warmup_start_factor: 0.10
+
+  early_stopping:
+    enabled: true
+    patience: 35
+    monitor: height_mae_speaker_balanced
+    mode: min
+    min_delta: 0.001
+    degradation_delta: 1.35
+    degradation_patience: 7
+
+  gradient_clipping:
+    enabled: true
+    max_norm: 0.8
+
+evaluation:
+  targets:
+    height_mae_cm: 3.0
+    weight_mae_kg: 5.0
+    age_mae_years: 5.0
+    gender_accuracy: 0.95
+  inference:
+    use_ensemble: false
+    deterministic: true
+    n_samples: 1
+    n_crops: 1
+    crop_size: 96
+
+logging:
+  wandb:
+    enabled: false
+  tensorboard:
+    enabled: false
+    log_dir: outputs/logs_v5_short_focused/
+  checkpoint:
+    dir: outputs/checkpoints_v5_short_focused/
+    save_top_k: 10
+    monitor: height_mae_speaker_balanced
+    mode: min
+
+inference:
+  checkpoint: outputs/checkpoints_v5_short_focused/best.ckpt
+  mc_samples: 8
+  deterministic_ensemble: true
+  n_crops: 3
+  crop_size: 96
+  output_uncertainty: true
+  output_dir: outputs/predictions_v5_short_focused/

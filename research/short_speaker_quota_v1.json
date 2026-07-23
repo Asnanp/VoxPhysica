@@ -1,0 +1,21 @@
+{
+  "version": "1.0",
+  "short_threshold_cm_exclusive": 160.0,
+  "adult_minimum_age_years": 18,
+  "pilot_targets": {
+    "development_measured_short": 120,
+    "sealed_test_measured_short": 80,
+    "development_measured_short_male": 30,
+    "sealed_test_measured_short_male": 15
+  },
+  "minimum_valid_clips_per_speaker": 5,
+  "recommended_total_minutes_per_speaker": 8,
+  "minimum_primary_languages": 4,
+  "minimum_device_categories": 4,
+  "notes": [
+    "Public HeightCeleb labels are train-only noisy estimates.",
+    "Synthetic augmentation never increases unique-person counts.",
+    "Assign collection_role before model evaluation.",
+    "Institutional ethics approval is required before recruitment."
+  ]
+}

@@ -1,0 +1,273 @@
+# ============================================================
+# VocalMorph V5 — 3cm MAE Frontier Config
+# ============================================================
+# Optimized for RTX 3060 (12GB VRAM)
+# Key improvements over v5_3cm_architecture:
+#   - Stronger regularization (dropout 0.22, weight_decay 0.055)
+#   - Domain adversarial training (GRL) for CELEB→NISP/TIMIT generalization
+#   - R-Drop regularization for robust representations
+#   - Mixup + stronger augmentation for better generalization
+#   - Target label smoothing for height
+#   - Higher short-weight (2.50) for extreme short speakers
+#   - Balanced monitoring for fair evaluation across height bins
+#   - Feature smoothing std 0.015
+#   - Longer warmup (12 epochs)
+#   - SWA for final evaluation stability
+
+project:
+  name: VocalMorph
+  version: "5.2.0-frontier-3cm"
+  author: Asnan P
+  description: >
+    V5.2 frontier — domain-adversarial training with stronger regularization,
+    mixup augmentation, R-Drop, and height-balanced monitoring to achieve 3cm MAE.
+
+data:
+  features_dir: data/features_vtl_ssl/
+  skip_feature_contract_validation: true
+  split_manifests:
+    train: data/splits/train_clean.csv
+    val: data/splits/val_clean.csv
+    test: data/splits/test_clean.csv
+  targets:
+    - height_cm
+    - weight_kg
+    - age
+    - gender
+
+features:
+  strict: true
+  mfcc:
+    n_mfcc: 40
+    include_delta: true
+    include_delta_delta: true
+  formants:
+    n_formants: 4
+
+model:
+  name: VocalMorphV5
+  type: range_aware_speaker_height_architecture
+  input_dim: 264
+  v5:
+    d_model: 192
+    n_heads: 6
+    n_blocks: 5
+    ff_mult: 3
+    conv_kernel: 17
+    dropout: 0.22
+    n_height_experts: 5
+    expert_delta_cm: 15.0
+    direct_blend: 0.22
+    meta_dim: 72
+    height_bin_classes: 5
+
+physics:
+  enabled: false
+
+training:
+  seed: 11
+  epochs: 160
+  batch_size: 48
+  eval_batch_size: 96
+  gradient_accumulation_steps: 2
+  num_workers: 4
+  eval_num_workers: 2
+  persistent_workers: true
+  prefetch_factor: 2
+  eval_prefetch_factor: 2
+  device: cuda
+  mixed_precision: true
+  allow_tf32: true
+  max_feature_frames: 640
+  train_crop_mode: random
+  eval_crop_mode: center
+  pin_memory: true
+  eval_pin_memory: false
+  non_blocking: true
+  empty_cache_frequency: 10
+  gradient_checkpointing: false
+  train_eval_frequency: 1
+  final_train_eval: true
+
+  # ============================================================
+  # Augmentation — stronger for better generalization
+  # ============================================================
+  augmentation:
+    enabled: true
+    noise_p: 0.30
+    noise_std: 0.012
+    time_mask_p: 0.20
+    time_mask_max_frac: 0.050
+    feat_mask_p: 0.15
+    feat_mask_max_frac: 0.035
+    scale_p: 0.18
+    scale_std: 0.035
+    temporal_jitter_p: 0.08
+    temporal_jitter_max_frac: 0.020
+    freq_mask_p: 0.08
+    freq_mask_max_frac: 0.10
+    mixup_p: 0.15
+    mixup_alpha: 0.20
+
+  # ============================================================
+  # R-Drop regularization for robust representations
+  # ============================================================
+  rdrop:
+    enabled: true
+    weight: 0.30
+
+  # ============================================================
+  # Target label smoothing — small noise on regression targets
+  # ============================================================
+  target_label_smoothing:
+    enabled: true
+    std: 0.08
+    decay: 0.95
+
+  # ============================================================
+  # EMA for smooth evaluation
+  # ============================================================
+  ema:
+    enabled: true
+    decay: 0.9990
+    update_every: 1
+    warmup_steps: 200
+    use_for_eval: true
+
+  # ============================================================
+  # SWA for better generalization
+  # ============================================================
+  swa:
+    enabled: true
+    start_frac: 0.70
+    anneal_epochs: 15
+    use_for_eval: true
+
+  # ============================================================
+  # Optimizer
+  # ============================================================
+  optimizer:
+    type: adamw
+    lr: 0.000080
+    weight_decay: 0.055
+    betas: [0.9, 0.995]
+    eps: 1e-8
+
+  # ============================================================
+  # Scheduler — cosine annealing with longer schedule
+  # ============================================================
+  scheduler:
+    type: cosine_annealing
+    T_max: 160
+    eta_min: 0.000003
+
+  # ============================================================
+  # Loss — V5 VTSL v2 with height-balanced short-weight
+  # ============================================================
+  loss:
+    type: vtsl_v2
+    use_gender_class_weights: false
+    domain_grl_lambda_min: 0.01
+    domain_grl_lambda_max: 0.30
+    v5:
+      height_nll_weight: 0.30
+      height_huber_weight: 0.48
+      height_mae_weight: 0.34
+      weight_weight: 0.05
+      age_weight: 0.04
+      gender_weight: 0.08
+      height_bin_weight: 0.26
+      ranking_weight: 0.12
+      speaker_consistency_weight: 0.10
+      gate_entropy_weight: 0.004
+      short_weight: 2.50
+      medium_weight: 1.00
+      tall_weight: 1.18
+      huber_delta_norm: 0.50
+      rank_margin_cm: 2.0
+
+  # ============================================================
+  # Speaker batching — source-balanced for domain generalization
+  # ============================================================
+  speaker_batching:
+    enabled: true
+    mode: height_balanced
+    speakers_per_batch: 24
+    clips_per_speaker: 2
+    paired_speakers_per_batch: 6
+    singleton_speakers_per_batch: 8
+    balance_gender: true
+    gender_balance_strength: 0.30
+    height_bin_weights:
+      short: 2.0
+      medium: 1.0
+      tall: 1.20
+    gender_height_weights:
+      male_short: 2.0
+      female_short: 1.50
+      male_tall: 1.10
+      female_tall: 1.15
+    max_speaker_weight: 2.5
+
+  sample_weighting:
+    enabled: false
+
+  # ============================================================
+  # Feature smoothing for noise robustness
+  # ============================================================
+  feature_smoothing_std: 0.015
+  lr_warmup_epochs: 12
+  lr_warmup_start_factor: 0.08
+
+  # ============================================================
+  # Early stopping — longer patience for deeper convergence
+  # ============================================================
+  early_stopping:
+    enabled: true
+    patience: 40
+    monitor: height_mae_speaker_balanced
+    mode: min
+    min_delta: 0.001
+    degradation_delta: 1.50
+    degradation_patience: 8
+
+  # ============================================================
+  # Gradient clipping
+  # ============================================================
+  gradient_clipping:
+    enabled: true
+    max_norm: 0.8
+
+evaluation:
+  targets:
+    height_mae_cm: 3.0
+    weight_mae_kg: 5.0
+    age_mae_years: 5.0
+    gender_accuracy: 0.95
+  inference:
+    use_ensemble: true
+    deterministic: false
+    n_samples: 16
+    n_crops: 3
+    crop_size: 96
+
+logging:
+  wandb:
+    enabled: false
+  tensorboard:
+    enabled: false
+    log_dir: outputs/logs_v5_3cm_frontier/
+  checkpoint:
+    dir: outputs/checkpoints_v5_3cm_frontier/
+    save_top_k: 10
+    monitor: height_mae_speaker_balanced
+    mode: min
+
+inference:
+  checkpoint: outputs/checkpoints_v5_3cm_frontier/best.ckpt
+  mc_samples: 16
+  deterministic_ensemble: true
+  n_crops: 3
+  crop_size: 96
+  output_uncertainty: true
+  output_dir: outputs/predictions_v5_3cm_frontier/

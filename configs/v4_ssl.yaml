@@ -1,0 +1,178 @@
+# ============================================================
+# VocalMorph V4 — SSL-Powered Height Estimation Config
+# ============================================================
+# Target: 3cm MAE speaker-level height estimation
+# RTX 3060 (12GB VRAM) optimized
+#
+# Key changes from V3:
+#   - SSL features (768-dim wav2vec2) or handcrafted (136-dim auto-detected)
+#   - 2 Conformer adapter blocks (not 6)
+#   - Simple Huber + MAE + Gender CE loss
+#   - No warm restarts — monotonic cosine decay
+#   - Differential LR for backbone vs head
+#   - Stable training: no oscillation, no late-epoch collapse
+
+project:
+  name: VocalMorph-V4
+  version: "4.0.0"
+  author: Asnan P
+  description: >
+    V4 — SSL backbone + lightweight Conformer adapter + clean loss.
+    Designed for 3cm MAE with stable, monotonic convergence.
+
+data:
+  features_dir: data/features_v4/
+  split_manifests:
+    train: data/splits/train_clean.csv
+    val: data/splits/val_clean.csv
+    test: data/splits/test_clean.csv
+  sample_rate: 16000
+  skip_feature_contract_validation: true
+
+features:
+  strict: false
+  require_parselmouth: false
+  normalize_spectral: true
+  mfcc:
+    n_mfcc: 40
+    n_fft: 512
+    hop_length: 160
+    win_length: 400
+    include_delta: true
+    include_delta_delta: true
+  formants:
+    n_formants: 4
+    max_formant: 5500
+    window_length: 0.025
+  pitch:
+    method: praat
+    min_pitch: 50
+    max_pitch: 500
+  vtl:
+    estimate: true
+    speed_of_sound: 34000
+
+model:
+  name: VocalMorphV4
+  # input_dim is auto-detected from features (768 for SSL, 136 for handcrafted)
+  input_dim: 136
+  v4:
+    # Conformer adapter — lightweight since SSL already has 12 transformer layers
+    adapter_dim: 384
+    adapter_heads: 8
+    adapter_blocks: 3
+    adapter_ff_expansion: 4
+    adapter_conv_kernel: 15
+    dropout: 0.25
+
+    # Pooling
+    pool_hidden: 128
+
+    # Height regression tower
+    tower_hidden: 384
+
+    # SSL backbone (disabled for pre-extracted features)
+    use_ssl_backbone: false
+    ssl_model_name: "facebook/wav2vec2-base"
+    ssl_freeze: true
+    ssl_layers_to_use: 4
+
+training:
+  seed: 42
+  epochs: 100
+  batch_size: 48
+  gradient_accumulation_steps: 3   # effective batch = 144
+  num_workers: 4
+  prefetch_factor: 2
+  persistent_workers: true
+  device: auto
+  amp: true
+  mixed_precision: true
+  allow_tf32: true
+  max_feature_frames: 640
+  train_crop_mode: random
+  eval_crop_mode: center
+  pin_memory: true
+
+  # No speaker batching — plain shuffled batches
+  speaker_batching:
+    enabled: false
+
+  # Feature augmentation — moderate (SSL features are already robust)
+  augmentation:
+    enabled: true
+    noise_p: 0.25
+    noise_std: 0.008
+    time_mask_p: 0.20
+    time_mask_max_frac: 0.06
+    feat_mask_p: 0.15
+    feat_mask_max_frac: 0.05
+    scale_p: 0.20
+    scale_std: 0.025
+    temporal_jitter_p: 0.12
+    temporal_jitter_max_frac: 0.03
+    freq_mask_p: 0.0
+    freq_mask_max_frac: 0.0
+    mixup_p: 0.0
+    mixup_alpha: 0.0
+
+  # EMA for smoother evaluation
+  ema:
+    enabled: true
+    decay: 0.9995
+    update_every: 1
+    warmup_steps: 300
+    use_for_eval: true
+
+  optimizer:
+    type: adamw
+    lr: 0.0002
+    weight_decay: 0.02
+    betas: [0.9, 0.999]
+    eps: 1.0e-8
+
+  # Monotonic cosine — NO warm restarts (prevents late collapse)
+  scheduler:
+    type: cosine_annealing
+    T_max: 100
+    eta_min: 0.000001
+
+  # Simple, stable loss
+  loss:
+    huber_delta: 1.0
+    huber_weight: 0.5
+    mae_weight: 0.3
+    smoothl1_weight: 0.2
+    gender_weight: 0.15
+    label_smoothing: 0.05
+
+  # Linear LR warmup
+  lr_warmup_epochs: 8
+  lr_warmup_start_factor: 0.05
+
+  # Feature smoothing during training (mild noise injection)
+  feature_smoothing_std: 0.006
+
+  early_stopping:
+    enabled: true
+    patience: 25
+    monitor: height_mae_speaker
+    mode: min
+
+  gradient_clipping:
+    enabled: true
+    max_norm: 1.0
+
+logging:
+  tensorboard:
+    enabled: true
+    log_dir: outputs/v4/logs/
+  checkpoint:
+    dir: outputs/v4/checkpoints/
+    save_top_k: 5
+    monitor: height_mae_speaker
+    mode: min
+
+evaluation:
+  targets:
+    height_mae_cm: 3.0
