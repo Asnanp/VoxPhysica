@@ -259,6 +259,6 @@ Key academic literature integrated into VoxPhysica:
 ## 👤 Author & Acknowledgments
 
 **Asnan P** — Lead AI / ML Developer & Researcher  
-🌐 [Portfolio (asnanp.netlify.app)](https://asnanp.netlify.app) | 🐙 [GitHub (@Asnanp)](https://github.com/Asnanp)
+🐙 [GitHub (@Asnanp)](https://github.com/Asnanp)
 
 > *"Rigorous evaluation, uncompromised leakage controls, continuous iteration — defining the frontier of vocal biometrics."*
