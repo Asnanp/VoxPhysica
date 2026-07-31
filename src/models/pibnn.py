@@ -172,6 +172,22 @@ class PhysicsConstraintLoss(nn.Module):
             return torch.tensor(0.0, device=pred_height_cm.device)
         return F.mse_loss(expected_delta_f[mask], formant_spacing[mask])
 
+    def short_male_overpred_penalty(
+        self,
+        pred_height_cm: torch.Tensor,
+        gender_logits: torch.Tensor,
+        formant_spacing: Optional[torch.Tensor],
+    ) -> torch.Tensor:
+        if formant_spacing is None:
+            return torch.tensor(0.0, device=pred_height_cm.device)
+        probs = torch.softmax(gender_logits, dim=-1)
+        p_male = probs[:, 1]
+        mask = (formant_spacing > 1080.0) & (p_male > 0.4) & torch.isfinite(formant_spacing)
+        if not mask.any():
+            return torch.tensor(0.0, device=pred_height_cm.device)
+        overpred = F.relu(pred_height_cm[mask] - 164.0)
+        return overpred.mean()
+
     def f0_gender_penalty(self, gender_logits: torch.Tensor, f0_mean: Optional[torch.Tensor]) -> torch.Tensor:
         if f0_mean is None:
             return torch.tensor(0.0, device=gender_logits.device)
@@ -193,6 +209,7 @@ class PhysicsConstraintLoss(nn.Module):
             "vtl_height": self.vtl_weight * self.vtl_height_penalty(pred_height, vtl_estimated),
             "formant_vtl": self.formant_weight * self.formant_vtl_penalty(pred_height, formant_spacing),
             "short_voice_formant": self.formant_weight * 1.5 * self.short_voice_formant_penalty(pred_height, formant_spacing),
+            "short_male_overpred": self.formant_weight * 2.0 * self.short_male_overpred_penalty(pred_height, gender_logits, formant_spacing),
             "f0_gender": self.f0_gender_weight * self.f0_gender_penalty(gender_logits, f0_mean),
         }
         losses["total_physics"] = sum(losses.values())

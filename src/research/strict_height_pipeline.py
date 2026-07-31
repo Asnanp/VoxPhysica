@@ -1010,6 +1010,23 @@ def fit_postprocessor(
                 slope = 1.2
                 intercept = float(np.median(t - 1.2 * p))
             affine_params["short_voice"] = (slope, intercept)
+    elif kind == "short_male_debias":
+        mask_short = pred < 168.0
+        mask_short_male = (gender == 1) & (pred < 172.0)
+        mask = mask_short | mask_short_male
+        if int(mask.sum()) >= 3:
+            p = pred[mask]
+            t = y[mask]
+            var_p = float(np.var(p))
+            if var_p > 1e-6:
+                slope = float(np.clip(np.cov(p, t)[0, 1] / var_p, 0.6, 2.5))
+                intercept = float(np.median(t - slope * p))
+            else:
+                slope = 1.1
+                intercept = float(np.median(t - 1.1 * p))
+            affine_params["short_male"] = (slope, intercept)
+        else:
+            affine_params["short_male"] = (1.0, 0.0)
 
     return {
         "kind": kind,
@@ -1059,6 +1076,20 @@ def apply_postprocessor(
             for index, p_val in enumerate(result):
                 if p_val < 168.0:
                     weight = float(np.clip((168.0 - p_val) / 10.0, 0.0, 1.0))
+                    calibrated = slope * p_val + intercept
+                    result[index] = (1.0 - weight) * p_val + weight * calibrated
+        return result
+    elif kind == "short_male_debias":
+        affine = params.get("affine_params", {})
+        if "short_male" in affine:
+            slope, intercept = affine["short_male"]
+            for index, (p_val, g_val) in enumerate(zip(result, gender)):
+                if g_val == 1 and p_val < 172.0:
+                    weight = float(np.clip((172.0 - p_val) / 12.0, 0.0, 1.0))
+                    calibrated = slope * p_val + intercept
+                    result[index] = (1.0 - weight) * p_val + weight * calibrated
+                elif p_val < 165.0:
+                    weight = float(np.clip((165.0 - p_val) / 10.0, 0.0, 1.0))
                     calibrated = slope * p_val + intercept
                     result[index] = (1.0 - weight) * p_val + weight * calibrated
         return result
@@ -1135,7 +1166,7 @@ def choose_recipe(
     for base_name, (names, weights, phase_weight) in recipes.items():
         train_base = oof_matrix @ weights
         val_base = val_matrix @ weights
-        for post_kind in ("raw", "global", "group", "group_snap", "gender_affine", "range_affine", "short_gated", "short_voice_calibrated"):
+        for post_kind in ("raw", "global", "group", "group_snap", "gender_affine", "range_affine", "short_gated", "short_voice_calibrated", "short_male_debias"):
             params = fit_postprocessor(
                 train.y,
                 train_base,
