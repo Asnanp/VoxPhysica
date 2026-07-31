@@ -1048,22 +1048,33 @@ def fit_postprocessor(
                 intercept = float(np.median(t - 1.2 * p))
             affine_params["short_voice"] = (slope, intercept)
     elif kind == "short_male_debias":
-        mask_short = pred < 168.0
-        mask_short_male = (gender == 1) & (pred < 172.0)
-        mask = mask_short | mask_short_male
-        if int(mask.sum()) >= 3:
-            p = pred[mask]
-            t = y[mask]
-            var_p = float(np.var(p))
-            if var_p > 1e-6:
-                slope = float(np.clip(np.cov(p, t)[0, 1] / var_p, 0.6, 2.5))
-                intercept = float(np.median(t - slope * p))
+        mask_male = (gender == 1) & (pred < 174.0)
+        mask_short_female = (gender == 0) & (pred < 165.0)
+        if int(mask_male.sum()) >= 3:
+            p_m = pred[mask_male]
+            t_m = y[mask_male]
+            var_m = float(np.var(p_m))
+            if var_m > 1e-6:
+                slope_m = float(np.clip(np.cov(p_m, t_m)[0, 1] / var_m, 0.7, 2.8))
+                intercept_m = float(np.median(t_m - slope_m * p_m))
             else:
-                slope = 1.1
-                intercept = float(np.median(t - 1.1 * p))
-            affine_params["short_male"] = (slope, intercept)
+                slope_m = 1.2
+                intercept_m = float(np.median(t_m - 1.2 * p_m))
+            affine_params["short_male"] = (slope_m, intercept_m)
         else:
             affine_params["short_male"] = (1.0, 0.0)
+
+        if int(mask_short_female.sum()) >= 3:
+            p_f = pred[mask_short_female]
+            t_f = y[mask_short_female]
+            var_f = float(np.var(p_f))
+            if var_f > 1e-6:
+                slope_f = float(np.clip(np.cov(p_f, t_f)[0, 1] / var_f, 0.6, 2.2))
+                intercept_f = float(np.median(t_f - slope_f * p_f))
+            else:
+                slope_f = 1.0
+                intercept_f = float(np.median(t_f - p_f))
+            affine_params["short_female"] = (slope_f, intercept_f)
 
     return {
         "kind": kind,
@@ -1119,24 +1130,33 @@ def apply_postprocessor(
     elif kind == "short_male_debias":
         affine = params.get("affine_params", {})
         if "short_male" in affine:
-            slope, intercept = affine["short_male"]
+            slope_m, intercept_m = affine["short_male"]
             for index, (p_val, g_val) in enumerate(zip(result, gender)):
-                if g_val == 1 and p_val < 172.0:
-                    weight = float(np.clip((172.0 - p_val) / 12.0, 0.0, 1.0))
-                    calibrated = slope * p_val + intercept
+                if g_val == 1 and p_val < 174.0:
+                    weight = float(np.clip((174.0 - p_val) / 10.0, 0.0, 1.0))
+                    calibrated = slope_m * p_val + intercept_m
                     result[index] = (1.0 - weight) * p_val + weight * calibrated
-                elif p_val < 165.0:
-                    weight = float(np.clip((165.0 - p_val) / 10.0, 0.0, 1.0))
-                    calibrated = slope * p_val + intercept
+        if "short_female" in affine:
+            slope_f, intercept_f = affine["short_female"]
+            for index, (p_val, g_val) in enumerate(zip(result, gender)):
+                if g_val == 0 and p_val < 165.0:
+                    weight = float(np.clip((165.0 - p_val) / 8.0, 0.0, 1.0))
+                    calibrated = slope_f * p_val + intercept_f
                     result[index] = (1.0 - weight) * p_val + weight * calibrated
         return result
 
     result += float(params.get("global_offset", 0.0))
     offsets = params.get("group_offsets", {})
     for index, (source_name, gender_value) in enumerate(zip(source, gender)):
-        result[index] += float(
-            offsets.get(f"{source_name}:{int(gender_value)}", 0.0)
-        )
+        if kind == "group_snap" and gender_value == 1 and result[index] < 172.0:
+            offset_val = float(offsets.get(f"{source_name}:{int(gender_value)}", 0.0))
+            if offset_val > 0.0:
+                offset_val *= float(np.clip((result[index] - 162.0) / 10.0, 0.0, 1.0))
+            result[index] += offset_val
+        else:
+            result[index] += float(
+                offsets.get(f"{source_name}:{int(gender_value)}", 0.0)
+            )
     if kind == "group_snap":
         timit = source == "TIMIT"
         result[timit] = np.round(result[timit] / 2.54) * 2.54
