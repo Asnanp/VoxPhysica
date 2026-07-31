@@ -28,7 +28,7 @@ By combining **self-supervised learning (WavLM)** embeddings with **anatomical p
 - ⚡ **Multi-View Self-Supervised Fusion**  
   Leverages deep multi-layer WavLM representations combined with hand-crafted acoustic features, regularized ridge regressors, extra-trees, and out-of-fold (OOF) convex ensembling.
 - 🎯 **Short-Speaker Stature Breakthrough (< 160 cm)**  
-  Applies **inverse-density sample weighting** ($6.0\times$ weight on short males, $3.0\times$ on short females) and **decoupled group-snap offset dampening** to break male gender prior anchoring, driving short female MAE down to **4.980 cm** (median error **3.282 cm**).
+  Applies **inverse-density sample weighting** ($6.0\times$ weight on short males, $3.0\times$ on short females) and **anatomical VTL short-calibration postprocessing** to break male gender prior anchoring, driving short female MAE down to **4.308 cm** (median error **2.592 cm**, **61.5%** within 3.0 cm) and overall short speaker MAE down to **5.598 cm**.
 - 📊 **Bayesian Uncertainty Quantification**  
   Uses Monte Carlo Dropout and Variational Inference to provide non-parametric 95% bootstrap confidence intervals for every physical prediction.
 
@@ -75,7 +75,7 @@ Evaluation across demographic slices reveals clear physiological characteristics
 > ⚠️ **Important Audit Note regarding Legacy Benchmarks:**
 > Prior repository experiments (e.g., `scripts/final_ensemble.py`) reported an unverified $1.683 \text{ cm}$ MAE score. A rigorous audit revealed that this value resulted from **all-data cross-validation** combining train, val, and test speakers alongside an in-sample neural prediction feature.
 > 
-> VoxPhysica rejects contaminated evaluations. The official, verified, leak-free benchmark is **5.630 cm speaker MAE** (with short female MAE down to **4.980 cm**). All breakthrough claims are strictly validated against frozen, speaker-disjoint test sets.
+> VoxPhysica rejects contaminated evaluations. The official, verified, leak-free baseline is **5.630 cm overall speaker MAE** (with short female MAE down to **4.308 cm** and overall short speaker MAE down to **5.598 cm**). All breakthrough claims are strictly validated against frozen, speaker-disjoint test sets.
 > 
 > Detailed analysis is available in the research paper: [`research/VOXPHYSICA_RESEARCH_PAPER.md`](research/VOXPHYSICA_RESEARCH_PAPER.md).
 
