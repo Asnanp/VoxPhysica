@@ -534,6 +534,13 @@ def build_candidates(split: SplitData, seed: int, quick: bool = False) -> List[C
                         _ridge_pipeline(n_features, k, alpha),
                     )
                 )
+                candidates.append(
+                    Candidate(
+                        f"ridge__short_male_weighted__{view}__k{min(k, n_features)}__a{alpha:g}",
+                        view,
+                        _ridge_pipeline(n_features, k, alpha),
+                    )
+                )
 
     vtl_assisted = [
         f"{name}+vtl"
@@ -775,9 +782,17 @@ def oof_predictions(
         try:
             x = split.views[candidate.view]
             is_short_weighted = "short_weighted" in candidate.name
+            is_short_male_weighted = "short_male_weighted" in candidate.name
             for train_index, holdout_index in folds:
                 sw = None
-                if is_short_weighted:
+                if is_short_male_weighted:
+                    y_tr = split.y[train_index]
+                    g_tr = split.gender[train_index]
+                    sw = np.ones_like(y_tr, dtype=float)
+                    sw[(y_tr < 160.0) & (g_tr == 1)] *= 6.0
+                    sw[(y_tr < 160.0) & (g_tr == 0)] *= 3.0
+                    sw[y_tr < 152.0] *= 4.0
+                elif is_short_weighted:
                     y_tr = split.y[train_index]
                     sw = np.ones_like(y_tr, dtype=float)
                     sw[y_tr < 160.0] *= 2.5
@@ -807,9 +822,12 @@ def select_diverse_candidates(
 ) -> List[str]:
     ordered = sorted(predictions, key=lambda name: metrics[name]["mae_cm"])
     selected: List[str] = []
-    short_candidates = [name for name in ordered if "short_weighted" in name]
+    short_candidates = [name for name in ordered if "short_weighted" in name or "short_male_weighted" in name]
     if short_candidates:
         selected.append(short_candidates[0])
+    short_male_candidates = [name for name in ordered if "short_male_weighted" in name]
+    if short_male_candidates and short_male_candidates[0] not in selected:
+        selected.append(short_male_candidates[0])
 
     for name in ordered:
         if name in selected:
@@ -841,6 +859,8 @@ def optimize_convex_weights(
     prior: np.ndarray | None = None,
     penalty: float = 0.02,
     short_penalty_weight: float = 0.0,
+    gender: np.ndarray | None = None,
+    short_male_penalty_weight: float = 0.0,
 ) -> np.ndarray:
     matrix = np.asarray(matrix, dtype=float)
     y = np.asarray(y, dtype=float)
@@ -860,6 +880,7 @@ def optimize_convex_weights(
         prior = prior / prior.sum()
 
     short_mask = y < 160.0
+    short_male_mask = (y < 160.0) & (gender == 1) if gender is not None else np.zeros_like(short_mask, dtype=bool)
 
     def objective(weights: np.ndarray) -> float:
         mae = np.mean(np.abs(matrix @ weights - y))
@@ -868,8 +889,18 @@ def optimize_convex_weights(
             if short_mask.sum() > 0
             else 0.0
         )
+        short_male_mae = (
+            np.mean(np.abs((matrix @ weights)[short_male_mask] - y[short_male_mask]))
+            if short_male_mask.sum() > 0
+            else 0.0
+        )
         regularizer = float(penalty) * np.sum(np.square(weights - prior))
-        return float(mae + float(short_penalty_weight) * short_mae + regularizer)
+        return float(
+            mae
+            + float(short_penalty_weight) * short_mae
+            + float(short_male_penalty_weight) * short_male_mae
+            + regularizer
+        )
 
     result = minimize(
         objective,
@@ -898,8 +929,14 @@ def fit_candidates_predict(
     for name in names:
         candidate = candidates_by_name[name]
         is_short_weighted = "short_weighted" in name
+        is_short_male_weighted = "short_male_weighted" in name
         sw = None
-        if is_short_weighted:
+        if is_short_male_weighted:
+            sw = np.ones_like(train.y, dtype=float)
+            sw[(train.y < 160.0) & (train.gender == 1)] *= 6.0
+            sw[(train.y < 160.0) & (train.gender == 0)] *= 3.0
+            sw[train.y < 152.0] *= 4.0
+        elif is_short_weighted:
             sw = np.ones_like(train.y, dtype=float)
             sw[train.y < 160.0] *= 2.5
             sw[train.y < 152.0] *= 4.0
@@ -1144,10 +1181,18 @@ def choose_recipe(
 ) -> Tuple[Dict[str, Any], Dict[str, Dict[str, float]], Dict[str, np.ndarray]]:
     oof_matrix = np.column_stack([oof[name] for name in selected])
     short_oof_weights = optimize_convex_weights(oof_matrix, train.y, short_penalty_weight=0.5)
+    short_male_oof_weights = optimize_convex_weights(
+        oof_matrix,
+        train.y,
+        short_penalty_weight=0.5,
+        gender=train.gender,
+        short_male_penalty_weight=1.5,
+    )
 
     recipes: Dict[str, Tuple[List[str], np.ndarray, float]] = {
         "acoustic_convex": (list(selected), np.asarray(oof_weights), 0.0),
         "short_convex": (list(selected), np.asarray(short_oof_weights), 0.0),
+        "short_male_convex": (list(selected), np.asarray(short_male_oof_weights), 0.0),
     }
     for name in selected[:3]:
         one_hot = np.zeros(len(selected), dtype=float)
