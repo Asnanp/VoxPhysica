@@ -477,6 +477,12 @@ def write_report(path: Path, payload: Mapping[str, Any]) -> None:
 def main() -> int:
     args = parse_args()
     feature_root = resolve(args.feature_root)
+    if not feature_root.exists():
+        for fallback in ("data/features_v4_combo_full_ssl", "data/features_v4_target_ssl", "data/features_v4"):
+            candidate_path = resolve(fallback)
+            if candidate_path.exists():
+                feature_root = candidate_path
+                break
     train_path = resolve(args.train_csv)
     val_path = resolve(args.val_csv)
     support_path = resolve(args.support_csv)

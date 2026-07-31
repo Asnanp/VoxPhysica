@@ -162,6 +162,16 @@ class PhysicsConstraintLoss(nn.Module):
         expected_delta_f = self.speed_of_sound / (2.0 * vtl)
         return F.mse_loss(expected_delta_f, formant_spacing)
 
+    def short_voice_formant_penalty(self, pred_height_cm: torch.Tensor, formant_spacing: Optional[torch.Tensor]) -> torch.Tensor:
+        if formant_spacing is None:
+            return torch.tensor(0.0, device=pred_height_cm.device)
+        vtl = (pred_height_cm / self.vtl_height_ratio).clamp(min=10.0, max=35.0)
+        expected_delta_f = self.speed_of_sound / (2.0 * vtl)
+        mask = (formant_spacing > 1150.0) & torch.isfinite(formant_spacing)
+        if not mask.any():
+            return torch.tensor(0.0, device=pred_height_cm.device)
+        return F.mse_loss(expected_delta_f[mask], formant_spacing[mask])
+
     def f0_gender_penalty(self, gender_logits: torch.Tensor, f0_mean: Optional[torch.Tensor]) -> torch.Tensor:
         if f0_mean is None:
             return torch.tensor(0.0, device=gender_logits.device)
@@ -182,6 +192,7 @@ class PhysicsConstraintLoss(nn.Module):
         losses = {
             "vtl_height": self.vtl_weight * self.vtl_height_penalty(pred_height, vtl_estimated),
             "formant_vtl": self.formant_weight * self.formant_vtl_penalty(pred_height, formant_spacing),
+            "short_voice_formant": self.formant_weight * 1.5 * self.short_voice_formant_penalty(pred_height, formant_spacing),
             "f0_gender": self.f0_gender_weight * self.f0_gender_penalty(gender_logits, f0_mean),
         }
         losses["total_physics"] = sum(losses.values())

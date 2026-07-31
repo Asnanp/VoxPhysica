@@ -10,4 +10,9 @@ data/
 __pycache__/
 *.bat
 *.cmd
+*.log
 .ace-tool/
+catboost_info/
+TEST_DIR/
+archive/
+nul

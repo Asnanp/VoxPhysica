@@ -527,6 +527,13 @@ def build_candidates(split: SplitData, seed: int, quick: bool = False) -> List[C
                         _ridge_pipeline(n_features, k, alpha),
                     )
                 )
+                candidates.append(
+                    Candidate(
+                        f"ridge__short_weighted__{view}__k{min(k, n_features)}__a{alpha:g}",
+                        view,
+                        _ridge_pipeline(n_features, k, alpha),
+                    )
+                )
 
     vtl_assisted = [
         f"{name}+vtl"
@@ -573,6 +580,19 @@ def build_candidates(split: SplitData, seed: int, quick: bool = False) -> List[C
                     ),
                 )
             )
+            candidates.append(
+                Candidate(
+                    f"svr__short_weighted__{view}__p{components}__c{c_value:g}__e{epsilon:g}",
+                    view,
+                    _svr_pipeline(
+                        n_features,
+                        components,
+                        c_value,
+                        epsilon,
+                        seed,
+                    ),
+                )
+            )
 
     # HistGradientBoosting on fused + metadata
     for view in [v for v in ("wavlm_fusion+meta", "wavlm2+meta") if v in available]:
@@ -580,6 +600,13 @@ def build_candidates(split: SplitData, seed: int, quick: bool = False) -> List[C
         candidates.append(
             Candidate(
                 f"hist_l1__{view}__p128",
+                view,
+                _hist_l1_pipeline(n_features, 128, 0.03, 400 if not quick else 200, 15, 12, seed),
+            )
+        )
+        candidates.append(
+            Candidate(
+                f"hist_l1__short_weighted__{view}__p128",
                 view,
                 _hist_l1_pipeline(n_features, 128, 0.03, 400 if not quick else 200, 15, 12, seed),
             )
@@ -596,6 +623,13 @@ def build_candidates(split: SplitData, seed: int, quick: bool = False) -> List[C
                     _xgb_pipeline(n_features, 128, 300 if not quick else 150, 0.03, 4, seed),
                 )
             )
+            candidates.append(
+                Candidate(
+                    f"xgb_l1__short_weighted__{view}__p128",
+                    view,
+                    _xgb_pipeline(n_features, 128, 300 if not quick else 150, 0.03, 4, seed),
+                )
+            )
 
     # LightGBM Regressors
     if HAS_LGB:
@@ -604,6 +638,13 @@ def build_candidates(split: SplitData, seed: int, quick: bool = False) -> List[C
             candidates.append(
                 Candidate(
                     f"lgb_l1__{view}__p128",
+                    view,
+                    _lgb_pipeline(n_features, 128, 300 if not quick else 150, 0.03, 20, seed),
+                )
+            )
+            candidates.append(
+                Candidate(
+                    f"lgb_l1__short_weighted__{view}__p128",
                     view,
                     _lgb_pipeline(n_features, 128, 300 if not quick else 150, 0.03, 20, seed),
                 )
@@ -697,9 +738,23 @@ def build_candidates(split: SplitData, seed: int, quick: bool = False) -> List[C
     return candidates
 
 
-def _fit(estimator: Any, x: np.ndarray, y: np.ndarray) -> Any:
+def _fit(
+    estimator: Any,
+    x: np.ndarray,
+    y: np.ndarray,
+    sample_weight: np.ndarray | None = None,
+) -> Any:
     model = clone(estimator)
-    model.fit(x, y)
+    if sample_weight is not None:
+        try:
+            model.fit(x, y, model__sample_weight=sample_weight)
+        except Exception:
+            try:
+                model.fit(x, y, sample_weight=sample_weight)
+            except Exception:
+                model.fit(x, y)
+    else:
+        model.fit(x, y)
     return model
 
 
@@ -719,11 +774,19 @@ def oof_predictions(
         pred = np.full(len(split.y), np.nan, dtype=np.float64)
         try:
             x = split.views[candidate.view]
+            is_short_weighted = "short_weighted" in candidate.name
             for train_index, holdout_index in folds:
+                sw = None
+                if is_short_weighted:
+                    y_tr = split.y[train_index]
+                    sw = np.ones_like(y_tr, dtype=float)
+                    sw[y_tr < 160.0] *= 2.5
+                    sw[y_tr < 152.0] *= 4.0
                 model = _fit(
                     candidate.estimator,
                     x[train_index],
                     split.y[train_index],
+                    sample_weight=sw,
                 )
                 pred[holdout_index] = model.predict(x[holdout_index])
             if not np.all(np.isfinite(pred)):
@@ -744,7 +807,13 @@ def select_diverse_candidates(
 ) -> List[str]:
     ordered = sorted(predictions, key=lambda name: metrics[name]["mae_cm"])
     selected: List[str] = []
+    short_candidates = [name for name in ordered if "short_weighted" in name]
+    if short_candidates:
+        selected.append(short_candidates[0])
+
     for name in ordered:
+        if name in selected:
+            continue
         if not selected:
             selected.append(name)
             continue
@@ -771,6 +840,7 @@ def optimize_convex_weights(
     y: np.ndarray,
     prior: np.ndarray | None = None,
     penalty: float = 0.02,
+    short_penalty_weight: float = 0.0,
 ) -> np.ndarray:
     matrix = np.asarray(matrix, dtype=float)
     y = np.asarray(y, dtype=float)
@@ -789,10 +859,17 @@ def optimize_convex_weights(
         prior = np.clip(prior, 0.0, None)
         prior = prior / prior.sum()
 
+    short_mask = y < 160.0
+
     def objective(weights: np.ndarray) -> float:
         mae = np.mean(np.abs(matrix @ weights - y))
+        short_mae = (
+            np.mean(np.abs((matrix @ weights)[short_mask] - y[short_mask]))
+            if short_mask.sum() > 0
+            else 0.0
+        )
         regularizer = float(penalty) * np.sum(np.square(weights - prior))
-        return float(mae + regularizer)
+        return float(mae + float(short_penalty_weight) * short_mae + regularizer)
 
     result = minimize(
         objective,
@@ -820,10 +897,17 @@ def fit_candidates_predict(
     fitted: Dict[str, Any] = {}
     for name in names:
         candidate = candidates_by_name[name]
+        is_short_weighted = "short_weighted" in name
+        sw = None
+        if is_short_weighted:
+            sw = np.ones_like(train.y, dtype=float)
+            sw[train.y < 160.0] *= 2.5
+            sw[train.y < 152.0] *= 4.0
         model = _fit(
             candidate.estimator,
             train.views[candidate.view],
             train.y,
+            sample_weight=sw,
         )
         predictions[name] = np.asarray(
             model.predict(query.views[candidate.view]),
@@ -885,8 +969,8 @@ def fit_postprocessor(
                 affine_params[str(int(gender_value))] = (slope, intercept)
     elif kind == "range_affine":
         for slice_name, mask in [
-            ("short", pred < 162.0),
-            ("medium", (pred >= 162.0) & (pred < 175.0)),
+            ("short", pred < 165.0),
+            ("medium", (pred >= 165.0) & (pred < 175.0)),
             ("tall", pred >= 175.0),
         ]:
             if int(mask.sum()) >= 4:
@@ -900,6 +984,32 @@ def fit_postprocessor(
                     slope = 1.0
                     intercept = float(np.median(t - p))
                 affine_params[slice_name] = (slope, intercept)
+    elif kind == "short_gated":
+        mask = pred < 165.0
+        if int(mask.sum()) >= 4:
+            p = pred[mask]
+            t = y[mask]
+            var_p = float(np.var(p))
+            if var_p > 1e-6:
+                slope = float(np.clip(np.cov(p, t)[0, 1] / var_p, 0.6, 2.2))
+                intercept = float(np.median(t - slope * p))
+            else:
+                slope = 1.0
+                intercept = float(np.median(t - p))
+            affine_params["short_gated"] = (slope, intercept)
+    elif kind == "short_voice_calibrated":
+        mask = pred < 168.0
+        if int(mask.sum()) >= 4:
+            p = pred[mask]
+            t = y[mask]
+            var_p = float(np.var(p))
+            if var_p > 1e-6:
+                slope = float(np.clip(np.cov(p, t)[0, 1] / var_p, 0.7, 2.5))
+                intercept = float(np.median(t - slope * p))
+            else:
+                slope = 1.2
+                intercept = float(np.median(t - 1.2 * p))
+            affine_params["short_voice"] = (slope, intercept)
 
     return {
         "kind": kind,
@@ -929,10 +1039,28 @@ def apply_postprocessor(
     elif kind == "range_affine":
         affine = params.get("affine_params", {})
         for index, p_val in enumerate(result):
-            slice_name = "short" if p_val < 162.0 else ("medium" if p_val < 175.0 else "tall")
+            slice_name = "short" if p_val < 165.0 else ("medium" if p_val < 175.0 else "tall")
             if slice_name in affine:
                 slope, intercept = affine[slice_name]
                 result[index] = slope * result[index] + intercept
+        return result
+    elif kind == "short_gated":
+        affine = params.get("affine_params", {})
+        if "short_gated" in affine:
+            slope, intercept = affine["short_gated"]
+            for index, p_val in enumerate(result):
+                if p_val < 165.0:
+                    result[index] = slope * p_val + intercept
+        return result
+    elif kind == "short_voice_calibrated":
+        affine = params.get("affine_params", {})
+        if "short_voice" in affine:
+            slope, intercept = affine["short_voice"]
+            for index, p_val in enumerate(result):
+                if p_val < 168.0:
+                    weight = float(np.clip((168.0 - p_val) / 10.0, 0.0, 1.0))
+                    calibrated = slope * p_val + intercept
+                    result[index] = (1.0 - weight) * p_val + weight * calibrated
         return result
 
     result += float(params.get("global_offset", 0.0))
@@ -983,8 +1111,12 @@ def choose_recipe(
     val_predictions: Mapping[str, np.ndarray],
     phase12_val: np.ndarray | None,
 ) -> Tuple[Dict[str, Any], Dict[str, Dict[str, float]], Dict[str, np.ndarray]]:
+    oof_matrix = np.column_stack([oof[name] for name in selected])
+    short_oof_weights = optimize_convex_weights(oof_matrix, train.y, short_penalty_weight=0.5)
+
     recipes: Dict[str, Tuple[List[str], np.ndarray, float]] = {
         "acoustic_convex": (list(selected), np.asarray(oof_weights), 0.0),
+        "short_convex": (list(selected), np.asarray(short_oof_weights), 0.0),
     }
     for name in selected[:3]:
         one_hot = np.zeros(len(selected), dtype=float)
@@ -998,13 +1130,12 @@ def choose_recipe(
     metrics: Dict[str, Dict[str, float]] = {}
     predictions: Dict[str, np.ndarray] = {}
     recipe_specs: Dict[str, Dict[str, Any]] = {}
-    oof_matrix = np.column_stack([oof[name] for name in selected])
     val_matrix = np.column_stack([val_predictions[name] for name in selected])
 
     for base_name, (names, weights, phase_weight) in recipes.items():
         train_base = oof_matrix @ weights
         val_base = val_matrix @ weights
-        for post_kind in ("raw", "global", "group", "group_snap", "gender_affine", "range_affine"):
+        for post_kind in ("raw", "global", "group", "group_snap", "gender_affine", "range_affine", "short_gated", "short_voice_calibrated"):
             params = fit_postprocessor(
                 train.y,
                 train_base,
@@ -1053,12 +1184,22 @@ def choose_recipe(
                 "postprocess": "raw",
             }
 
-    best_mae = min(item["mae_cm"] for item in metrics.values())
+    acoustic_metrics = {
+        name: item for name, item in metrics.items()
+        if recipe_specs[name]["phase12_weight"] == 0.0
+    }
+    best_mae = min(item["mae_cm"] for item in acoustic_metrics.values())
     finalists = [
         name
-        for name, item in metrics.items()
+        for name, item in acoustic_metrics.items()
         if item["mae_cm"] <= best_mae + 0.03
     ]
+    val_short_mask = val.y < 160.0
+    val_short_maes = {
+        name: float(np.mean(np.abs(pred[val_short_mask] - val.y[val_short_mask])))
+        if np.any(val_short_mask) else 0.0
+        for name, pred in predictions.items()
+    }
     complexity = {
         name: (
             int(recipe_specs[name]["phase12_weight"] > 0.0) * 10
@@ -1074,6 +1215,7 @@ def choose_recipe(
     winner = min(
         finalists,
         key=lambda name: (
+            val_short_maes[name],
             complexity[name],
             metrics[name]["mae_cm"],
             name,

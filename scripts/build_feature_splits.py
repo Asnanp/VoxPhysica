@@ -74,6 +74,21 @@ def _resolve(path: str) -> str:
     return path if os.path.isabs(path) else os.path.join(ROOT, path)
 
 
+def _resolve_audio_path(path: str) -> str:
+    resolved = _resolve(path)
+    if os.path.isfile(resolved):
+        return resolved
+    normalized = str(path or "").replace("\\", "/")
+    nisp_marker = "data/NISP-Dataset/"
+    marker_idx = normalized.find(nisp_marker)
+    if marker_idx >= 0:
+        raw_candidate = _resolve(normalized[marker_idx:])
+        if os.path.isfile(raw_candidate):
+            return raw_candidate
+    return resolved
+
+
+
 def _iter_audio_paths(audio_paths_field: str, max_n: int) -> Iterable[str]:
     parts = [part.strip() for part in str(audio_paths_field or "").split("|") if part.strip()]
     return parts[: max(0, int(max_n))]
@@ -165,7 +180,7 @@ def _build_audio_hash_index(
     for rows in split_rows.values():
         for row in rows:
             for raw_path in _iter_audio_paths(row.get("audio_paths", ""), max_n=10**9):
-                full_path = _resolve(raw_path)
+                full_path = _resolve_audio_path(raw_path)
                 if os.path.isfile(full_path):
                     all_paths.add(normalize_path(full_path))
     hash_index: Dict[str, str] = {}
