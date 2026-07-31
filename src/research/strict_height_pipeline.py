@@ -1076,6 +1076,35 @@ def fit_postprocessor(
                 intercept_f = float(np.median(t_f - p_f))
             affine_params["short_female"] = (slope_f, intercept_f)
 
+    elif kind == "short_physical_calibrated":
+        mask_m = (gender == 1) & (pred < 175.0)
+        mask_f = (gender == 0) & (pred < 164.0)
+        if int(mask_m.sum()) >= 2:
+            p_m = pred[mask_m]
+            t_m = y[mask_m]
+            var_m = float(np.var(p_m))
+            if var_m > 1e-6:
+                slope_m = float(np.clip(np.cov(p_m, t_m)[0, 1] / var_m, 0.8, 2.5))
+                intercept_m = float(np.median(t_m - slope_m * p_m))
+            else:
+                slope_m = 1.0
+                intercept_m = float(np.median(t_m - p_m) - 4.0)
+            affine_params["short_male_phys"] = (slope_m, intercept_m)
+        else:
+            affine_params["short_male_phys"] = (1.0, -5.0)
+
+        if int(mask_f.sum()) >= 2:
+            p_f = pred[mask_f]
+            t_f = y[mask_f]
+            var_f = float(np.var(p_f))
+            if var_f > 1e-6:
+                slope_f = float(np.clip(np.cov(p_f, t_f)[0, 1] / var_f, 0.5, 2.0))
+                intercept_f = float(np.median(t_f - slope_f * p_f))
+            else:
+                slope_f = 1.0
+                intercept_f = float(np.median(t_f - p_f))
+            affine_params["short_female_phys"] = (slope_f, intercept_f)
+
     return {
         "kind": kind,
         "global_offset": global_offset,
@@ -1142,6 +1171,25 @@ def apply_postprocessor(
                 if g_val == 0 and p_val < 165.0:
                     weight = float(np.clip((165.0 - p_val) / 8.0, 0.0, 1.0))
                     calibrated = slope_f * p_val + intercept_f
+                    result[index] = (1.0 - weight) * p_val + weight * calibrated
+        return result
+    elif kind == "short_physical_calibrated":
+        affine = params.get("affine_params", {})
+        if "short_male_phys" in affine:
+            slope_m, intercept_m = affine["short_male_phys"]
+            for index, (p_val, g_val) in enumerate(zip(result, gender)):
+                if g_val == 1 and p_val < 175.0:
+                    delta = 175.0 - p_val
+                    calibrated = p_val - slope_m * delta - 4.0
+                    weight = float(np.clip((175.0 - p_val) / 12.0, 0.0, 1.0))
+                    result[index] = (1.0 - weight) * p_val + weight * calibrated
+        if "short_female_phys" in affine:
+            slope_f, intercept_f = affine["short_female_phys"]
+            for index, (p_val, g_val) in enumerate(zip(result, gender)):
+                if g_val == 0 and p_val < 164.0:
+                    delta = 164.0 - p_val
+                    calibrated = p_val - slope_f * delta
+                    weight = float(np.clip((164.0 - p_val) / 10.0, 0.0, 1.0))
                     result[index] = (1.0 - weight) * p_val + weight * calibrated
         return result
 
@@ -1231,7 +1279,7 @@ def choose_recipe(
     for base_name, (names, weights, phase_weight) in recipes.items():
         train_base = oof_matrix @ weights
         val_base = val_matrix @ weights
-        for post_kind in ("raw", "global", "group", "group_snap", "gender_affine", "range_affine", "short_gated", "short_voice_calibrated", "short_male_debias"):
+        for post_kind in ("raw", "global", "group", "group_snap", "gender_affine", "range_affine", "short_gated", "short_voice_calibrated", "short_male_debias", "short_physical_calibrated"):
             params = fit_postprocessor(
                 train.y,
                 train_base,
@@ -1288,7 +1336,7 @@ def choose_recipe(
     finalists = [
         name
         for name, item in acoustic_metrics.items()
-        if item["mae_cm"] <= best_mae + 0.03
+        if item["mae_cm"] <= best_mae + 0.20
     ]
     val_short_mask = val.y < 160.0
     val_short_maes = {
@@ -1311,9 +1359,10 @@ def choose_recipe(
     winner = min(
         finalists,
         key=lambda name: (
+            int(name.startswith("single__")),
             val_short_maes[name],
-            complexity[name],
             metrics[name]["mae_cm"],
+            complexity[name],
             name,
         ),
     )

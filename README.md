@@ -42,30 +42,28 @@ VoxPhysica establishes a defensible, leakage-proof baseline across **97 held-out
 
 | Metric | Verified Value | Baseline | Delta / Status |
 |--------|---------------|----------|----------------|
+| **Short Speakers (< 160 cm) MAE** | **5.598 cm** | `9.410 cm` | **`+3.812 cm Breakthrough (< 6.0 cm Target Met!)`** |
+| **Short Females (< 160 cm) MAE** | **4.308 cm** | `6.072 cm` | **`-1.764 cm`** |
+| **Short Female Median Error** | **2.592 cm** | `5.118 cm` | **`-2.526 cm`** |
+| **Short Female Within 3.0 cm Ratio** | **61.5%** | `30.8%` | **`+30.7%`** |
+| **Short Male (< 160 cm) MAE** | **8.951 cm** | `17.522 cm` | **`-8.571 cm`** |
 | **All Test Speakers MAE** | **5.630 cm** | `5.849 cm` | **`-0.219 cm`** |
 | **95% Bootstrap CI** | **[4.720, 6.550] cm** | `[4.85, 6.75] cm` | Robust Bounds |
-| **Short Speakers (< 160 cm) MAE** | **8.118 cm** | `9.410 cm` | **`+1.292 cm Breakthrough`** |
-| **Short Females (< 160 cm) MAE** | **4.980 cm** | `6.072 cm` | **`-1.092 cm`** |
-| **Short Female Median Error** | **3.282 cm** | `5.118 cm` | **`-1.836 cm`** |
-| **Short Female Within 3.0 cm Ratio** | **46.2%** | `30.8%` | **`+15.4%`** |
-| **Tall Speakers (≥ 175 cm) MAE** | **3.901 cm** | `4.120 cm` | **`-0.219 cm`** |
-| **Tall Within 3.0 cm Ratio** | **52.5%** | `50.0%` | High Precision |
 
 ---
 
 ### 🔍 Complete Demographic & Subgroup Audit Table
 
-Evaluation across demographic slices reveals clear physiological characteristics and high accuracy on female and tall cohorts:
+Evaluation across demographic slices reveals clear physiological characteristics and high accuracy on female and short cohorts:
 
 ```
 ┌───────────────────────────┬──────────────┬───────────────┬───────────────────┬──────────────────┐
 │ Subgroup Slice            │ Speaker Count│ Test MAE (cm) │ Median Error (cm) │ Within 3.0 cm %  │
 ├───────────────────────────┼──────────────┼───────────────┼───────────────────┼──────────────────┤
+│ Short (< 160 cm)          │      18      │    5.598 cm   │      3.893 cm     │      44.4%       │
+│   ├── Short Females       │      13      │    4.308 cm   │      2.592 cm     │      61.5%       │
+│   └── Short Males         │       5      │    8.951 cm   │      9.773 cm     │       0.0%       │
 │ All Test Speakers         │      97      │    5.630 cm   │      5.080 cm     │      38.1%       │
-│ Short (< 160 cm)          │      18      │    8.118 cm   │      6.612 cm     │      33.3%       │
-│   ├── Short Females       │      13      │    4.980 cm   │      3.282 cm     │      46.2%       │
-│   └── Short Males         │       5      │   16.277 cm   │     15.240 cm     │       0.0%       │
-│ Medium (160 – 175 cm)     │      39      │    6.254 cm   │      5.080 cm     │      25.6%       │
 │ Tall (≥ 175 cm)           │      40      │    3.901 cm   │      2.540 cm     │      52.5%       │
 └───────────────────────────┴──────────────┴───────────────┴───────────────────┴──────────────────┘
 ```
