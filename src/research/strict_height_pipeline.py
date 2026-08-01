@@ -536,6 +536,13 @@ def build_candidates(split: SplitData, seed: int, quick: bool = False) -> List[C
                 )
                 candidates.append(
                     Candidate(
+                        f"ridge__medium_weighted__{view}__k{min(k, n_features)}__a{alpha:g}",
+                        view,
+                        _ridge_pipeline(n_features, k, alpha),
+                    )
+                )
+                candidates.append(
+                    Candidate(
                         f"ridge__short_male_weighted__{view}__k{min(k, n_features)}__a{alpha:g}",
                         view,
                         _ridge_pipeline(n_features, k, alpha),
@@ -782,6 +789,7 @@ def oof_predictions(
         try:
             x = split.views[candidate.view]
             is_short_weighted = "short_weighted" in candidate.name
+            is_medium_weighted = "medium_weighted" in candidate.name
             is_short_male_weighted = "short_male_weighted" in candidate.name
             for train_index, holdout_index in folds:
                 sw = None
@@ -792,6 +800,10 @@ def oof_predictions(
                     sw[(y_tr < 160.0) & (g_tr == 1)] *= 6.0
                     sw[(y_tr < 160.0) & (g_tr == 0)] *= 3.0
                     sw[y_tr < 152.0] *= 4.0
+                elif is_medium_weighted:
+                    y_tr = split.y[train_index]
+                    sw = np.ones_like(y_tr, dtype=float)
+                    sw[(y_tr >= 160.0) & (y_tr < 175.0)] *= 2.5
                 elif is_short_weighted:
                     y_tr = split.y[train_index]
                     sw = np.ones_like(y_tr, dtype=float)
@@ -825,6 +837,9 @@ def select_diverse_candidates(
     short_candidates = [name for name in ordered if "short_weighted" in name or "short_male_weighted" in name]
     if short_candidates:
         selected.append(short_candidates[0])
+    medium_candidates = [name for name in ordered if "medium_weighted" in name]
+    if medium_candidates and medium_candidates[0] not in selected:
+        selected.append(medium_candidates[0])
     short_male_candidates = [name for name in ordered if "short_male_weighted" in name]
     if short_male_candidates and short_male_candidates[0] not in selected:
         selected.append(short_male_candidates[0])
@@ -861,6 +876,7 @@ def optimize_convex_weights(
     short_penalty_weight: float = 0.0,
     gender: np.ndarray | None = None,
     short_male_penalty_weight: float = 0.0,
+    medium_penalty_weight: float = 0.15,
 ) -> np.ndarray:
     matrix = np.asarray(matrix, dtype=float)
     y = np.asarray(y, dtype=float)
@@ -880,6 +896,7 @@ def optimize_convex_weights(
         prior = prior / prior.sum()
 
     short_mask = y < 160.0
+    medium_mask = (y >= 160.0) & (y < 175.0)
     short_male_mask = (y < 160.0) & (gender == 1) if gender is not None else np.zeros_like(short_mask, dtype=bool)
 
     def objective(weights: np.ndarray) -> float:
@@ -887,6 +904,11 @@ def optimize_convex_weights(
         short_mae = (
             np.mean(np.abs((matrix @ weights)[short_mask] - y[short_mask]))
             if short_mask.sum() > 0
+            else 0.0
+        )
+        medium_mae = (
+            np.mean(np.abs((matrix @ weights)[medium_mask] - y[medium_mask]))
+            if medium_mask.sum() > 0
             else 0.0
         )
         short_male_mae = (
@@ -898,6 +920,7 @@ def optimize_convex_weights(
         return float(
             mae
             + float(short_penalty_weight) * short_mae
+            + float(medium_penalty_weight) * medium_mae
             + float(short_male_penalty_weight) * short_male_mae
             + regularizer
         )
@@ -929,6 +952,7 @@ def fit_candidates_predict(
     for name in names:
         candidate = candidates_by_name[name]
         is_short_weighted = "short_weighted" in name
+        is_medium_weighted = "medium_weighted" in name
         is_short_male_weighted = "short_male_weighted" in name
         sw = None
         if is_short_male_weighted:
@@ -936,6 +960,9 @@ def fit_candidates_predict(
             sw[(train.y < 160.0) & (train.gender == 1)] *= 6.0
             sw[(train.y < 160.0) & (train.gender == 0)] *= 3.0
             sw[train.y < 152.0] *= 4.0
+        elif is_medium_weighted:
+            sw = np.ones_like(train.y, dtype=float)
+            sw[(train.y >= 160.0) & (train.y < 175.0)] *= 2.5
         elif is_short_weighted:
             sw = np.ones_like(train.y, dtype=float)
             sw[train.y < 160.0] *= 2.5
